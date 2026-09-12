@@ -367,12 +367,28 @@ app.get('/api/insights', async (req, res) => {
 });
 
 // Track record — public, on purpose: showing losses alongside wins is what
-// makes the accuracy claim credible instead of marketing copy.
+// makes the accuracy claim credible instead of marketing copy. BUT an
+// "open" row is a live, still-actionable setup — showing its instrument +
+// bias for free would just leak the paid signal through the back door, so
+// only closed (resolved, no-longer-actionable) rows are ever shown in full
+// to a non-premium visitor.
 app.get('/api/performance', async (req, res) => {
+  const email = req.authEmail || String(req.query.email || '').trim().toLowerCase();
+  let premium = false;
+  if (email) {
+    const sub = await store.getSubscriber(email);
+    premium = !!(sub && sub.status === 'active' && sub.expires_at && new Date(sub.expires_at) > new Date());
+  }
+
   const rows = await store.listSignals(500);
-  const stats = computePerformanceStats(rows);
-  const recent = rows.slice(0, 50).map(r => ({ ...r, label: LABELS[r.instrument] }));
-  res.json({ stats, recent });
+  const stats = computePerformanceStats(rows); // aggregate stats stay public either way — that's the credibility number
+  const recent = rows.slice(0, 50).map(r => {
+    if (r.status === 'open' && !premium) {
+      return { id: r.id, status: 'open', locked: true, created_at: r.created_at };
+    }
+    return { ...r, label: LABELS[r.instrument] };
+  });
+  res.json({ stats, recent, premium });
 });
 
 // Chart data for a single market: closes for everyone; EMA overlays +

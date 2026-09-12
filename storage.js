@@ -2,6 +2,9 @@
 // falls back to a simple in-memory store so the app can run in "demo mode"
 // with zero setup (no DB, no real payments).
 
+const fs = require('fs');
+const path = require('path');
+
 // Kept generous so the multi-strategy engine (signals.js) has enough raw
 // samples to bucket into synthetic candles for instruments without a real
 // candle feed (FX/gold). At a 10-minute poll interval, 600 samples ≈ 4 days.
@@ -14,23 +17,56 @@ function createMemoryStorage() {
   const signalLog = []; // { id, instrument, strategy, regime, side, entry, sl, tp1-4, confidence, status, outcome, best_level, created_at, closed_at }
   let signalLogSeq = 1;
 
+  // Persist accounts/sessions/signal history to a local JSON file so a
+  // simple process restart (idle spin-down/wake, a crash) doesn't force
+  // everyone to re-register. This does NOT survive a fresh deploy (a new
+  // container has no disk history) — only Postgres/a real DB survives that.
+  const DATA_FILE = process.env.DATA_FILE || path.join(__dirname, '.demo-data.json');
+  let saveTimer = null;
+  function scheduleSave() {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+      try {
+        fs.writeFileSync(DATA_FILE, JSON.stringify({
+          subscribers: [...subscribers.entries()],
+          sessions: [...sessions.entries()],
+          signalLog,
+          signalLogSeq,
+        }));
+      } catch (e) { console.error('[storage] persist failed (non-fatal):', e.message); }
+    }, 200);
+  }
+  function load() {
+    try {
+      if (!fs.existsSync(DATA_FILE)) return;
+      const data = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
+      (data.subscribers || []).forEach(([k, v]) => subscribers.set(k, v));
+      (data.sessions || []).forEach(([k, v]) => sessions.set(k, v));
+      (data.signalLog || []).forEach(row => signalLog.push(row));
+      signalLogSeq = data.signalLogSeq || 1;
+      console.log(`[storage] restored ${subscribers.size} account(s), ${sessions.size} session(s) from ${DATA_FILE}`);
+    } catch (e) { console.error('[storage] load failed (non-fatal):', e.message); }
+  }
+
   return {
     mode: 'memory',
-    async init() {},
+    async init() { load(); },
 
     async setPassword(email, passwordHash) {
       const existing = subscribers.get(email);
       if (existing) existing.password_hash = passwordHash;
       else subscribers.set(email, { email, status: 'pending', expires_at: null, created_at: new Date().toISOString(), password_hash: passwordHash });
+      scheduleSave();
     },
 
-    async createSession(token, email) { sessions.set(token, email); },
+    async createSession(token, email) { sessions.set(token, email); scheduleSave(); },
     async getSessionEmail(token) { return sessions.get(token) || null; },
-    async deleteSession(token) { sessions.delete(token); },
+    async deleteSession(token) { sessions.delete(token); scheduleSave(); },
 
     async logSignal(rec) {
       const row = { id: signalLogSeq++, status: 'open', outcome: null, best_level: null, closed_at: null, created_at: new Date().toISOString(), ...rec };
       signalLog.push(row);
+      scheduleSave();
       return row;
     },
     async getOpenSignals() { return signalLog.filter(s => s.status === 'open'); },
@@ -40,7 +76,7 @@ function createMemoryStorage() {
     },
     async updateSignalOutcome(id, patch) {
       const row = signalLog.find(s => s.id === id);
-      if (row) Object.assign(row, patch);
+      if (row) { Object.assign(row, patch); scheduleSave(); }
     },
     async listSignals(limit = 200) {
       return signalLog.slice(-limit).reverse();
@@ -67,6 +103,7 @@ function createMemoryStorage() {
     async upsertPending(email) {
       if (!subscribers.has(email)) {
         subscribers.set(email, { email, status: 'pending', expires_at: null, created_at: new Date().toISOString() });
+        scheduleSave();
       }
     },
 
@@ -80,11 +117,12 @@ function createMemoryStorage() {
         expires_at: expires,
         created_at: existing?.created_at || new Date().toISOString(),
       });
+      scheduleSave();
     },
 
     async deactivate(email) {
       const s = subscribers.get(email);
-      if (s) s.status = 'inactive';
+      if (s) { s.status = 'inactive'; scheduleSave(); }
     },
 
     async listSubscribers() {

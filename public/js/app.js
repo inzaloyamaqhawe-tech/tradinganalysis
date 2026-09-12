@@ -3,6 +3,17 @@
 // instruction — this is a market-structure read, not a trade instruction.
 const BIAS_LABEL = { BUY: 'BULLISH BIAS', SELL: 'BEARISH BIAS', HOLD: 'NEUTRAL' };
 
+// Standard pip size per instrument, for the Long/Short drag tool's live
+// distance readout. Crypto has no real "pip" convention, so those just show
+// a plain price distance instead of a fabricated pip count.
+const PIP_SIZE = { GBPUSD: 0.0001, XAUUSD: 0.01 };
+function formatDistance(priceDist, instrumentKey) {
+  const pipSize = PIP_SIZE[instrumentKey];
+  const abs = Math.abs(priceDist);
+  if (pipSize) return `${(abs / pipSize).toFixed(1)} pips`;
+  return `${abs.toFixed(abs >= 100 ? 2 : abs >= 1 ? 4 : 6)}`;
+}
+
 // ---------- Nav / routing (simple hash-based SPA, no framework needed) ----------
 const views = document.querySelectorAll('.view');
 const navItems = document.querySelectorAll('.mainnav-item');
@@ -21,13 +32,13 @@ function routeFromHash() {
   if (name === 'track') loadTrackRecord();
 }
 window.addEventListener('hashchange', routeFromHash);
-routeFromHash();
 
 async function loadTrackRecord() {
   const statsHost = document.getElementById('trackStats');
   const rowsHost = document.getElementById('trackRows');
   try {
-    const res = await fetch('/api/performance');
+    const email = currentUser?.email || knownEmail();
+    const res = await fetch(`/api/performance${email ? `?email=${encodeURIComponent(email)}` : ''}`, { headers: authHeaders() });
     const data = await res.json();
     const s = data.stats;
     statsHost.innerHTML = `
@@ -42,6 +53,14 @@ async function loadTrackRecord() {
       return;
     }
     rowsHost.innerHTML = data.recent.map(r => {
+      if (r.locked) {
+        return `<tr>
+          <td>${new Date(r.created_at).toLocaleDateString()}</td>
+          <td colspan="4" class="note">🔒 Live setup — <a href="#/pricing">subscribe</a> to see which market and bias this is</td>
+          <td><span class="outcome-pill open">Open</span></td>
+          <td>—</td>
+        </tr>`;
+      }
       const outcomeClass = r.status === 'open' ? 'open' : r.outcome === 'TP4' ? 'win' : r.outcome === 'SL' ? 'loss' : 'invalidated';
       const outcomeText = r.status === 'open' ? 'Open' : (r.outcome || '—');
       return `<tr>
@@ -237,6 +256,10 @@ function drawOneObject(ctx, o) {
   if (tool === 'trendline') {
     ctx.strokeStyle = '#f2b84b'; ctx.lineWidth = 2; ctx.setLineDash([]);
     ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+    const p1 = yToPrice(y1, priceScale.min, priceScale.max, priceScale.h);
+    const p2 = yToPrice(y2, priceScale.min, priceScale.max, priceScale.h);
+    ctx.font = '10px sans-serif'; ctx.fillStyle = '#f2b84b';
+    ctx.fillText(formatDistance(p2 - p1, currentChartKey), (x1 + x2) / 2 + 6, (y1 + y2) / 2 - 6);
   } else if (tool === 'hline') {
     ctx.strokeStyle = '#4f8cff'; ctx.lineWidth = 1.5; ctx.setLineDash([]);
     ctx.beginPath(); ctx.moveTo(0, y1); ctx.lineTo(drawCanvas.width, y1); ctx.stroke();
@@ -282,10 +305,12 @@ function drawOneObject(ctx, o) {
     const entryPrice = yToPrice(y1, priceScale.min, priceScale.max, priceScale.h);
     const targetPrice = yToPrice(y2, priceScale.min, priceScale.max, priceScale.h);
     const stopPrice = isLong ? entryPrice - (entryPrice - targetPrice) / 2 : entryPrice + (targetPrice - entryPrice) / 2;
+    const rewardDist = formatDistance(targetPrice - entryPrice, currentChartKey);
+    const riskDist = formatDistance(stopPrice - entryPrice, currentChartKey);
     ctx.font = '11px sans-serif'; ctx.fillStyle = '#e7edf7';
     ctx.fillText(`${isLong ? 'LONG' : 'SHORT'} entry ${entryPrice.toFixed(4)}`, left + 4, y1 - 4);
-    ctx.fillStyle = '#2fd480'; ctx.fillText(`target ${targetPrice.toFixed(4)}`, left + 4, rewardTop + 12);
-    ctx.fillStyle = '#ff5d6c'; ctx.fillText(`stop ${stopPrice.toFixed(4)}`, left + 4, riskTop + riskH - 4);
+    ctx.fillStyle = '#2fd480'; ctx.fillText(`target ${targetPrice.toFixed(4)}  (+${rewardDist})`, left + 4, rewardTop + 12);
+    ctx.fillStyle = '#ff5d6c'; ctx.fillText(`stop ${stopPrice.toFixed(4)}  (-${riskDist})`, left + 4, riskTop + riskH - 4);
   }
 }
 
@@ -293,6 +318,47 @@ function redrawObjects() {
   drawCtx.clearRect(0, 0, drawCanvas.width, drawCanvas.height);
   objects.forEach(o => drawOneObject(drawCtx, o));
   if (liveObj) drawOneObject(drawCtx, liveObj);
+}
+
+function distToSegment(px, py, x1, y1, x2, y2) {
+  const dx = x2 - x1, dy = y2 - y1;
+  const lenSq = dx * dx + dy * dy;
+  let t = lenSq ? ((px - x1) * dx + (py - y1) * dy) / lenSq : 0;
+  t = Math.max(0, Math.min(1, t));
+  return Math.hypot(px - (x1 + t * dx), py - (y1 + t * dy));
+}
+
+// Used by the Erase tool to find which single drawing a click landed on,
+// so removing one line/box/level doesn't force clearing everything.
+function distanceToObject(px, py, o) {
+  const { tool, x1, y1, x2, y2 } = o;
+  if (tool === 'trendline') return distToSegment(px, py, x1, y1, x2, y2);
+  if (tool === 'hline') return Math.abs(py - y1);
+  if (tool === 'rect') {
+    const left = Math.min(x1, x2), right = Math.max(x1, x2), top = Math.min(y1, y2), bottom = Math.max(y1, y2);
+    if (px < left - 8 || px > right + 8 || py < top - 8 || py > bottom + 8) return Infinity;
+    return Math.min(Math.abs(px - left), Math.abs(px - right), Math.abs(py - top), Math.abs(py - bottom));
+  }
+  if (tool === 'fib') {
+    const left = Math.min(x1, x2), width = Math.abs(x2 - x1) || 1;
+    if (px < left || px > left + width) return Infinity;
+    return Math.min(...[0, 0.236, 0.382, 0.5, 0.618, 1].map(r => Math.abs(py - (y1 + (y2 - y1) * r))));
+  }
+  if (tool === 'position') {
+    const left = Math.min(x1, x2), width = Math.abs(x2 - x1) || (drawCanvas.width - left);
+    if (px < left || px > left + width) return Infinity;
+    const isLong = y2 < y1;
+    const rewardTop = Math.min(y1, y2), rewardBottom = rewardTop + Math.abs(y2 - y1);
+    const riskH = Math.abs(y2 - y1) / 2, riskTop = isLong ? y1 : y1 - riskH, riskBottom = riskTop + riskH;
+    return (py >= rewardTop && py <= rewardBottom) || (py >= riskTop && py <= riskBottom) ? 0 : Infinity;
+  }
+  return Infinity;
+}
+
+function eraseObjectNear(px, py) {
+  let bestIdx = -1, bestDist = 12; // px tolerance
+  objects.forEach((o, i) => { const d = distanceToObject(px, py, o); if (d < bestDist) { bestDist = d; bestIdx = i; } });
+  if (bestIdx >= 0) { objects.splice(bestIdx, 1); redrawObjects(); }
 }
 
 function enableDrawing(enabled) {
@@ -351,7 +417,9 @@ let isDragging = false;
 drawCanvas.addEventListener('mousedown', (e) => {
   if (!activeTool) return;
   const r = drawCanvas.getBoundingClientRect();
-  liveObj = { tool: activeTool, x1: e.clientX - r.left, y1: e.clientY - r.top, x2: e.clientX - r.left, y2: e.clientY - r.top };
+  const x = e.clientX - r.left, y = e.clientY - r.top;
+  if (activeTool === 'erase') { eraseObjectNear(x, y); return; } // instant on click, no drag needed
+  liveObj = { tool: activeTool, x1: x, y1: y, x2: x, y2: y };
   isDragging = true;
 });
 drawCanvas.addEventListener('mousemove', (e) => {
@@ -614,6 +682,8 @@ checkBtn.addEventListener('click', async () => {
   }
 });
 
-// Now that every element referenced by updateAuthUI() is declared, resolve
-// the current session (if any) and paint the logged-in/out state.
+// Now that every element referenced by updateAuthUI()/loadTrackRecord() is
+// declared, resolve the current session and route to whatever the URL hash
+// says (both reference currentUser/authHeaders, which don't exist earlier).
 refreshMe();
+routeFromHash();
