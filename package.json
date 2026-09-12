@@ -1,0 +1,17 @@
+{
+  "name": "tradinganalysis",
+  "version": "1.0.0",
+  "description": "Live market dashboard + paid buy/sell insights (crypto, GBPUSD, XAUUSD)",
+  "main": "server.js",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "pg": "^8.12.0"
+  }
+}

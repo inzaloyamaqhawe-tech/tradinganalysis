@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>TradingAnalysis — Live Market Signals</title>
+<style>
+  :root {
+    --bg: #0b0f14; --panel: #121821; --panel2: #171f2b; --border: #232c3a;
+    --text: #e8edf5; --muted: #8a96a8; --up: #33d17a; --down: #ff5c6c;
+    --accent: #4f8cff; --accent2: #ffb84f;
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background: var(--bg); color: var(--text); font-family: -apple-system, Segoe UI, Roboto, Arial, sans-serif; padding: 0 16px 48px; }
+  header { max-width: 980px; margin: 0 auto; padding: 32px 0 12px; }
+  h1 { font-size: 1.6rem; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: .95rem; }
+  .wrap { max-width: 980px; margin: 0 auto; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; margin: 20px 0; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; }
+  .card .label { color: var(--muted); font-size: .8rem; text-transform: uppercase; letter-spacing: .04em; }
+  .card .price { font-size: 1.3rem; font-weight: 600; margin-top: 4px; }
+  .card .chg { font-size: .85rem; margin-top: 2px; }
+  .up { color: var(--up); } .down { color: var(--down); } .flat { color: var(--muted); }
+  .panel { background: var(--panel2); border: 1px solid var(--border); border-radius: 14px; padding: 22px; margin: 28px 0; }
+  .panel h2 { margin-top: 0; font-size: 1.15rem; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
+  input[type=email] { flex: 1; min-width: 220px; padding: 11px 14px; border-radius: 8px; border: 1px solid var(--border); background: #0e141c; color: var(--text); font-size: .95rem; }
+  button { padding: 11px 18px; border-radius: 8px; border: none; background: var(--accent); color: white; font-weight: 600; cursor: pointer; font-size: .95rem; }
+  button.secondary { background: transparent; border: 1px solid var(--border); color: var(--text); }
+  button:hover { filter: brightness(1.08); }
+  .note { color: var(--muted); font-size: .85rem; margin-top: 10px; line-height: 1.5; }
+  .signal-row { display:flex; justify-content: space-between; align-items:center; padding: 10px 0; border-bottom: 1px solid var(--border); gap: 12px; }
+  .signal-row:last-child { border-bottom: none; }
+  .badge { padding: 4px 10px; border-radius: 999px; font-size: .78rem; font-weight: 700; letter-spacing:.03em; }
+  .badge.BUY { background: rgba(51,209,122,.15); color: var(--up); }
+  .badge.SELL { background: rgba(255,92,108,.15); color: var(--down); }
+  .badge.HOLD { background: rgba(138,150,168,.15); color: var(--muted); }
+  .sig-note { color: var(--muted); font-size: .82rem; max-width: 480px; text-align: right; }
+  .disclaimer { color: var(--muted); font-size: .78rem; margin-top: 18px; border-top: 1px solid var(--border); padding-top: 14px; }
+  a { color: var(--accent); }
+  .price-tag { color: var(--accent2); font-weight: 700; }
+</style>
+</head>
+<body>
+<header>
+  <h1>📈 TradingAnalysis</h1>
+  <div class="sub">Live prices for 10 major crypto pairs + GBP/USD + Gold. Free to watch. Paid insights tell you when we'd lean buy or sell.</div>
+</header>
+
+<div class="wrap">
+  <div class="grid" id="priceGrid"></div>
+
+  <div class="panel">
+    <h2>🔓 Unlock Buy/Sell Insights — <span class="price-tag" id="priceLabel">R45/month</span></h2>
+    <p class="sub">Get a simple BUY / SELL / HOLD read on all 12 tracked markets, based on our own tracked price trend (not financial advice — for information only).</p>
+    <div class="row">
+      <input type="email" id="subEmail" placeholder="you@example.com" />
+      <button id="subBtn">Get Access</button>
+    </div>
+    <div class="row" style="margin-top:18px; border-top:1px solid var(--border); padding-top:16px;">
+      <input type="email" id="checkEmail" placeholder="Already subscribed? Enter your email" />
+      <button class="secondary" id="checkBtn">View My Insights</button>
+    </div>
+    <div id="subResult" class="note"></div>
+  </div>
+
+  <div class="panel" id="insightsPanel" style="display:none;">
+    <h2>Today's Signals</h2>
+    <div id="signalsList"></div>
+  </div>
+
+  <div class="disclaimer">
+    Prices are pulled live from public market data sources (crypto via Crypto.com's public exchange API; GBP/USD and gold from public FX/metals feeds) and refresh periodically.
+    Signals are a simple automated trend read from our own tracked history — they are informational only and not financial advice. Trading carries risk; never invest more than you can afford to lose.
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
