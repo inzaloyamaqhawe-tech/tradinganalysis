@@ -3,6 +3,7 @@ const cors = require('cors');
 const crypto = require('crypto');
 const { createMemoryStorage, createPgStorage } = require('./storage');
 const { runEngine, buildSyntheticCandles, emaSeries, EMA_FAST_PERIOD, EMA_SLOW_PERIOD } = require('./signals');
+const { sendMail } = require('./mailer');
 
 const app = express();
 app.use(cors());
@@ -48,6 +49,8 @@ const LABELS = Object.fromEntries([...CRYPTO_INSTRUMENTS, ...FX_INSTRUMENTS].map
 
 // In-memory cache of latest prices (fast reads for /api/prices)
 let latestCache = {}; // key -> { price, changePct, updatedAt }
+let lastPollAt = null;
+const SERVER_STARTED_AT = new Date().toISOString();
 // In-memory cache of real crypto candles (chronological, oldest first) for
 // the signal engine — refreshed on every poll cycle, not per-request.
 let cryptoCandleCache = {}; // key -> [{open,high,low,close}]
@@ -121,7 +124,9 @@ async function pollAllAndStore() {
     const rows = [...cryptoRows, ...fxRows];
     await store.addPollBatch(rows);
     await pollCryptoCandles();
-    console.log(`[poll] stored ${rows.length} price points + refreshed crypto candles @ ${new Date().toISOString()}`);
+    await trackSignals();
+    lastPollAt = new Date().toISOString();
+    console.log(`[poll] stored ${rows.length} price points + refreshed crypto candles + tracked signals @ ${lastPollAt}`);
   } catch (e) {
     console.error('poll failed', e);
   }
@@ -144,6 +149,72 @@ async function getCandlesFor(instrument) {
 async function computeSignal(instrument) {
   const candles = await getCandlesFor(instrument);
   return runEngine(candles);
+}
+
+// ---- Track record: logs each new setup the engine surfaces, and resolves
+// open ones against the latest price every poll cycle. This is what lets
+// /api/performance show an honest, non-cherry-picked history (wins AND
+// losses), instead of just the live "current read".
+async function trackSignals() {
+  for (const key of ALL_KEYS) {
+    let result;
+    try { result = await computeSignal(key); } catch (e) { continue; }
+    const price = latestCache[key]?.price;
+
+    if (price != null) {
+      const openForKey = (await store.getOpenSignals()).filter(s => s.instrument === key);
+      for (const sig of openForKey) {
+        const dir = sig.side === 'BUY' ? 1 : -1;
+        const levels = [['TP1', sig.tp1], ['TP2', sig.tp2], ['TP3', sig.tp3], ['TP4', sig.tp4]];
+        let bestLevel = sig.best_level;
+        for (const [label, lvl] of levels) {
+          const reached = dir === 1 ? price >= lvl : price <= lvl;
+          if (reached) bestLevel = label; // progressive — never regresses
+        }
+        const slHit = dir === 1 ? price <= sig.sl : price >= sig.sl;
+        const patch = {};
+        if (bestLevel !== sig.best_level) patch.best_level = bestLevel;
+        if (bestLevel === 'TP4') { patch.status = 'closed'; patch.outcome = 'TP4'; patch.closed_at = new Date().toISOString(); }
+        else if (slHit) { patch.status = 'closed'; patch.outcome = 'SL'; patch.closed_at = new Date().toISOString(); }
+        if (Object.keys(patch).length) await store.updateSignalOutcome(sig.id, patch);
+      }
+    }
+
+    if (result.signal !== 'HOLD' && result.levels) {
+      const latest = await store.getLatestSignalFor(key);
+      const sameOngoingSetup = latest && latest.status === 'open' && latest.side === result.signal && latest.strategy === result.strategy;
+      if (!sameOngoingSetup) {
+        if (latest && latest.status === 'open') {
+          // Structure changed before this setup resolved — close it out as invalidated rather than leaving it dangling.
+          await store.updateSignalOutcome(latest.id, { status: 'closed', outcome: 'INVALIDATED', closed_at: new Date().toISOString() });
+        }
+        await store.logSignal({
+          instrument: key, strategy: result.strategy, regime: result.regime, side: result.signal,
+          entry: result.levels.entry, sl: result.levels.sl,
+          tp1: result.levels.tp1, tp2: result.levels.tp2, tp3: result.levels.tp3, tp4: result.levels.tp4,
+          confidence: result.confidence,
+        });
+      }
+    }
+  }
+}
+
+function computePerformanceStats(rows) {
+  const closed = rows.filter(r => r.status === 'closed');
+  const wins = closed.filter(r => r.outcome === 'TP4').length;
+  const losses = closed.filter(r => r.outcome === 'SL').length;
+  const invalidated = closed.filter(r => r.outcome === 'INVALIDATED').length;
+  const open = rows.filter(r => r.status === 'open').length;
+  const decided = wins + losses;
+  const winRate = decided ? Math.round((wins / decided) * 1000) / 10 : null;
+
+  const byInstrument = {};
+  for (const r of closed) {
+    if (r.outcome !== 'TP4' && r.outcome !== 'SL') continue;
+    byInstrument[r.instrument] = byInstrument[r.instrument] || { wins: 0, losses: 0 };
+    byInstrument[r.instrument][r.outcome === 'TP4' ? 'wins' : 'losses']++;
+  }
+  return { total: rows.length, open, wins, losses, invalidated, winRate, byInstrument };
 }
 
 // ---- Routes ----
@@ -193,6 +264,7 @@ app.post('/api/auth/signup', async (req, res) => {
   const token = crypto.randomBytes(24).toString('hex');
   await store.createSession(token, email);
   const sub = await store.getSubscriber(email);
+  sendMail(email, 'Welcome to TradingAnalysis', `Your account has been created. Live market data is free — subscribe any time for ${PRICE_MONTHLY} to unlock full insights.`);
   res.json({ ok: true, token, email, status: sub?.status || 'pending' });
 });
 
@@ -257,6 +329,7 @@ app.post('/api/demo/activate', async (req, res) => {
   const email = req.authEmail || String(req.body?.email || '').trim().toLowerCase();
   if (!email) return res.status(400).json({ error: 'email required' });
   await store.activate(email, 30);
+  sendMail(email, 'Your TradingAnalysis subscription is active (demo)', `This is a demo activation — no real payment was taken. Your access is active for 30 days.`);
   res.json({ ok: true });
 });
 
@@ -272,7 +345,7 @@ app.get('/api/insights', async (req, res) => {
       locked: true,
       payLink: PAYPAL_LINK,
       price: PRICE_MONTHLY,
-      message: 'Subscribe to unlock buy/sell insights for all 12 tracked markets.',
+      message: 'Subscribe to unlock market-structure insights for all 12 tracked markets.',
     });
   }
 
@@ -281,7 +354,25 @@ app.get('/api/insights', async (req, res) => {
     const s = await computeSignal(key);
     signals.push({ key, label: LABELS[key], ...s });
   }
-  res.json({ locked: false, expiresAt: sub.expires_at, signals });
+
+  // Surface the single strongest setup across all 12 markets, so a user
+  // isn't left to guess which of 12 mixed-confidence reads to actually pay
+  // attention to. Ties broken by which strategy fired (arbitrary but stable).
+  const actionable = signals.filter(s => s.signal !== 'HOLD' && s.confidence != null);
+  const topPick = actionable.length
+    ? actionable.reduce((best, s) => (s.confidence > best.confidence ? s : best))
+    : null;
+
+  res.json({ locked: false, expiresAt: sub.expires_at, signals, topPick });
+});
+
+// Track record — public, on purpose: showing losses alongside wins is what
+// makes the accuracy claim credible instead of marketing copy.
+app.get('/api/performance', async (req, res) => {
+  const rows = await store.listSignals(500);
+  const stats = computePerformanceStats(rows);
+  const recent = rows.slice(0, 50).map(r => ({ ...r, label: LABELS[r.instrument] }));
+  res.json({ stats, recent });
 });
 
 // Chart data for a single market: closes for everyone; EMA overlays +
@@ -329,11 +420,44 @@ app.get('/api/admin/subscribers', requireAdmin, async (req, res) => {
   res.json({ subscribers: await store.listSubscribers() });
 });
 
+app.get('/api/admin/stats', requireAdmin, async (req, res) => {
+  const subs = await store.listSubscribers();
+  const now = new Date();
+  const active = subs.filter(s => s.status === 'active' && s.expires_at && new Date(s.expires_at) > now);
+  const expired = subs.filter(s => s.status === 'active' && (!s.expires_at || new Date(s.expires_at) <= now));
+  const pending = subs.filter(s => s.status === 'pending');
+  const inactive = subs.filter(s => s.status === 'inactive');
+  const priceAmount = parseFloat(String(PRICE_MONTHLY).replace(/[^\d.]/g, '')) || 0;
+
+  const signals = await store.listSignals(1000);
+
+  res.json({
+    demoMode: DEMO_MODE,
+    storageMode: store.mode,
+    lastPollAt,
+    serverStartedAt: SERVER_STARTED_AT,
+    users: {
+      total: subs.length,
+      active: active.length,
+      expired: expired.length,
+      pending: pending.length,
+      inactive: inactive.length,
+    },
+    revenue: {
+      priceLabel: PRICE_MONTHLY,
+      estimatedMRR: Math.round(active.length * priceAmount * 100) / 100,
+      note: 'Estimate = active subscribers × plan price. No real payment records are tracked yet (manual PayPal activation).',
+    },
+    signals: computePerformanceStats(signals),
+  });
+});
+
 app.post('/api/admin/activate', requireAdmin, async (req, res) => {
   const email = String(req.body?.email || '').trim().toLowerCase();
   const days = Number(req.body?.days || 30);
   if (!email) return res.status(400).json({ error: 'email required' });
   await store.activate(email, days);
+  sendMail(email, 'Your TradingAnalysis subscription is active', `Thanks for your payment — your access is now active for ${days} days. You can view your insights any time you're logged in.`);
   res.json({ ok: true });
 });
 
@@ -344,11 +468,35 @@ app.post('/api/admin/deactivate', requireAdmin, async (req, res) => {
   res.json({ ok: true });
 });
 
+// ---- Expiry emails: warn 3 days out, notify once it lapses. Dedup sets are
+// in-memory (reset on restart) — an acceptable MVP tradeoff since a missed
+// or occasionally-repeated notification isn't harmful, unlike spamming.
+const warnedExpiring = new Set();
+const notifiedExpired = new Set();
+async function checkExpiries() {
+  const subs = await store.listSubscribers();
+  const now = Date.now();
+  for (const s of subs) {
+    if (s.status !== 'active' || !s.expires_at) continue;
+    const msLeft = new Date(s.expires_at).getTime() - now;
+    const daysLeft = msLeft / (24 * 60 * 60 * 1000);
+    if (daysLeft <= 3 && daysLeft > 0 && !warnedExpiring.has(s.email)) {
+      warnedExpiring.add(s.email);
+      sendMail(s.email, 'Your TradingAnalysis subscription expires soon', `Your subscription expires in ${Math.ceil(daysLeft)} day(s) on ${new Date(s.expires_at).toLocaleDateString()}. Renew via PayPal.me/IYTechnologies to keep your access.`);
+    } else if (daysLeft <= 0 && !notifiedExpired.has(s.email)) {
+      notifiedExpired.add(s.email);
+      sendMail(s.email, 'Your TradingAnalysis access has expired', `Your subscription has expired. Renew any time via PayPal.me/IYTechnologies — your live dashboard stays free either way.`);
+    }
+  }
+}
+
 // ---- Startup ----
 store.init()
   .then(() => pollAllAndStore())
   .then(() => {
     setInterval(pollAllAndStore, 10 * 60 * 1000); // every 10 minutes
+    checkExpiries();
+    setInterval(checkExpiries, 24 * 60 * 60 * 1000); // once a day
     app.listen(PORT, () => console.log(`tradinganalysis listening on ${PORT}`));
   })
   .catch(err => {

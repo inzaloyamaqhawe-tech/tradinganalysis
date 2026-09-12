@@ -31,15 +31,20 @@
 </header>
 
 <main class="shell">
-  <h1>Subscribers</h1>
-  <p class="section-sub">Activate a subscriber after you've confirmed their PayPal payment.</p>
+  <h1>Admin</h1>
+  <p class="section-sub">Business overview + subscriber activation. Activate a subscriber after you've confirmed their PayPal payment.</p>
 
   <div class="panel">
     <div class="row">
       <input type="password" id="adminKey" placeholder="Admin key" />
-      <button id="loadBtn">Load subscribers</button>
+      <button id="loadBtn">Load dashboard</button>
     </div>
-    <div class="row" style="margin-top:14px; border-top:1px solid var(--border); padding-top:14px;">
+  </div>
+
+  <div class="hero-stats" id="statsRow" style="margin:20px 0;"></div>
+
+  <div class="panel">
+    <div class="row">
       <input type="email" id="quickEmail" placeholder="email to activate" />
       <input type="number" id="quickDays" placeholder="days" value="30" style="max-width:100px; min-width:100px;" />
       <button id="activateBtn">Activate</button>
@@ -67,7 +72,24 @@
     return res.json();
   }
 
+  async function loadStats() {
+    const data = await api('/api/admin/stats');
+    const host = document.getElementById('statsRow');
+    if (!data.users) { host.innerHTML = `<div class="note">${data.error || 'error loading stats'}</div>`; return; }
+    const lastPoll = data.lastPollAt ? new Date(data.lastPollAt).toLocaleTimeString() : 'never';
+    host.innerHTML = `
+      <div class="stat-chip"><div class="n">${data.users.total}</div><div class="l">Registered users</div></div>
+      <div class="stat-chip"><div class="n">${data.users.active}</div><div class="l">Active subs</div></div>
+      <div class="stat-chip"><div class="n">${data.users.pending}</div><div class="l">Pending</div></div>
+      <div class="stat-chip"><div class="n">${data.users.expired + data.users.inactive}</div><div class="l">Expired/inactive</div></div>
+      <div class="stat-chip"><div class="n">${(data.revenue.priceLabel.match(/^\D+/) || ['R'])[0]}${data.revenue.estimatedMRR}</div><div class="l">Est. MRR (${data.revenue.priceLabel})</div></div>
+      <div class="stat-chip"><div class="n">${data.signals.wins}/${data.signals.losses}</div><div class="l">Signal wins/losses</div></div>
+      <div class="stat-chip"><div class="n">${data.demoMode ? 'DEMO' : 'LIVE'}</div><div class="l">Mode · last poll ${lastPoll}</div></div>
+    `;
+  }
+
   async function load() {
+    await loadStats();
     const data = await api('/api/admin/subscribers');
     const rows = document.getElementById('rows');
     if (!data.subscribers) { rows.innerHTML = `<tr><td colspan="4">${data.error || 'error'}</td></tr>`; return; }

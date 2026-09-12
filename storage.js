@@ -11,6 +11,8 @@ function createMemoryStorage() {
   const subscribers = new Map(); // email -> { email, status, expires_at, created_at, password_hash }
   const history = new Map(); // instrument -> [{ price, polled_at }] most-recent-first
   const sessions = new Map(); // token -> email
+  const signalLog = []; // { id, instrument, strategy, regime, side, entry, sl, tp1-4, confidence, status, outcome, best_level, created_at, closed_at }
+  let signalLogSeq = 1;
 
   return {
     mode: 'memory',
@@ -25,6 +27,24 @@ function createMemoryStorage() {
     async createSession(token, email) { sessions.set(token, email); },
     async getSessionEmail(token) { return sessions.get(token) || null; },
     async deleteSession(token) { sessions.delete(token); },
+
+    async logSignal(rec) {
+      const row = { id: signalLogSeq++, status: 'open', outcome: null, best_level: null, closed_at: null, created_at: new Date().toISOString(), ...rec };
+      signalLog.push(row);
+      return row;
+    },
+    async getOpenSignals() { return signalLog.filter(s => s.status === 'open'); },
+    async getLatestSignalFor(instrument) {
+      for (let i = signalLog.length - 1; i >= 0; i--) if (signalLog[i].instrument === instrument) return signalLog[i];
+      return null;
+    },
+    async updateSignalOutcome(id, patch) {
+      const row = signalLog.find(s => s.id === id);
+      if (row) Object.assign(row, patch);
+    },
+    async listSignals(limit = 200) {
+      return signalLog.slice(-limit).reverse();
+    },
 
     async addPollBatch(rows) {
       const now = new Date().toISOString();
@@ -106,6 +126,50 @@ function createPgStorage(pool) {
           created_at TIMESTAMPTZ NOT NULL DEFAULT now()
         );
       `);
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS signal_log (
+          id SERIAL PRIMARY KEY,
+          instrument TEXT NOT NULL,
+          strategy TEXT,
+          regime TEXT,
+          side TEXT NOT NULL,
+          entry NUMERIC, sl NUMERIC, tp1 NUMERIC, tp2 NUMERIC, tp3 NUMERIC, tp4 NUMERIC,
+          confidence INTEGER,
+          status TEXT NOT NULL DEFAULT 'open',
+          outcome TEXT,
+          best_level TEXT,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+          closed_at TIMESTAMPTZ
+        );
+      `);
+      await pool.query(`CREATE INDEX IF NOT EXISTS idx_signal_log_status ON signal_log (status);`);
+      await pool.query(`CREATE INDEX IF NOT EXISTS idx_signal_log_instrument ON signal_log (instrument, created_at DESC);`);
+    },
+
+    async logSignal(rec) {
+      const { rows } = await pool.query(
+        `INSERT INTO signal_log (instrument, strategy, regime, side, entry, sl, tp1, tp2, tp3, tp4, confidence)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
+        [rec.instrument, rec.strategy, rec.regime, rec.side, rec.entry, rec.sl, rec.tp1, rec.tp2, rec.tp3, rec.tp4, rec.confidence]
+      );
+      return rows[0];
+    },
+    async getOpenSignals() {
+      const { rows } = await pool.query(`SELECT * FROM signal_log WHERE status = 'open'`);
+      return rows;
+    },
+    async getLatestSignalFor(instrument) {
+      const { rows } = await pool.query(`SELECT * FROM signal_log WHERE instrument = $1 ORDER BY created_at DESC LIMIT 1`, [instrument]);
+      return rows[0] || null;
+    },
+    async updateSignalOutcome(id, patch) {
+      const fields = Object.keys(patch);
+      const sets = fields.map((f, i) => `${f} = $${i + 2}`).join(', ');
+      await pool.query(`UPDATE signal_log SET ${sets} WHERE id = $1`, [id, ...fields.map(f => patch[f])]);
+    },
+    async listSignals(limit = 200) {
+      const { rows } = await pool.query(`SELECT * FROM signal_log ORDER BY created_at DESC LIMIT $1`, [limit]);
+      return rows;
     },
 
     async setPassword(email, passwordHash) {

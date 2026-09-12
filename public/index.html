@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>TradingAnalysis — Live Market Signals</title>
+<title>TradingAnalysis — Market Insight Platform</title>
 <link rel="stylesheet" href="css/styles.css" />
 </head>
 <body>
@@ -17,8 +17,10 @@
     <nav class="mainnav" id="mainnav">
       <button class="mainnav-item" data-view="dashboard">Dashboard</button>
       <button class="mainnav-item" data-view="insights">Insights <span class="lock">🔒</span></button>
+      <button class="mainnav-item" data-view="track">Track Record</button>
       <button class="mainnav-item" data-view="pricing">Pricing</button>
       <button class="mainnav-item" data-view="account">My Account</button>
+      <button class="mainnav-item" data-view="risk">Risk Disclosure</button>
     </nav>
     <div class="topbar-cta">
       <span class="status-pill" id="authPill" style="display:none;"></span>
@@ -36,15 +38,15 @@
   <section class="view active" data-view="dashboard">
     <div class="hero-banner">
       <div class="hero-copy">
-        <div class="eyebrow">Regime-aware · multi-strategy · ATR-scaled</div>
-        <h1>Trade signals built for accuracy, not hype.</h1>
-        <p>We classify each market's regime — trending, ranging, breaking out, or quiet — and only fire the strategy built for that condition, instead of one generic rule for every market. Every non-HOLD signal ships with a full Entry / TP1-TP4 / stop-loss ladder at a disciplined 1:2 risk:reward, sized to that asset's own volatility.</p>
+        <div class="eyebrow">Market analysis · trading intelligence</div>
+        <h1>Data-driven market insight, not hype.</h1>
+        <p>We read each market's structure — trending, ranging, breaking out, or quiet — and surface the bias and setup strength for that condition instead of one generic rule for every market. Every insight ships with a full Entry / TP1-TP4 / stop-loss reference ladder at a disciplined 1:2 risk:reward, sized to that asset's own volatility, to help you evaluate potential opportunities.</p>
         <div class="hero-stats">
           <div class="stat-chip"><div class="n">12</div><div class="l">Markets tracked</div></div>
           <div class="stat-chip"><div class="n" id="statUp">–</div><div class="l">Up right now</div></div>
-          <div class="stat-chip"><div class="n">4</div><div class="l">Regime-matched strategies</div></div>
+          <div class="stat-chip"><div class="n">4</div><div class="l">Structure-matched models</div></div>
         </div>
-        <p class="hero-disclaimer">Informational only, not financial advice — trading carries risk.</p>
+        <p class="hero-disclaimer">Insights are informational only. You are responsible for your own analysis and trading decisions — no outcome is guaranteed. See our <a href="#/risk">Risk Disclosure</a>.</p>
       </div>
 
       <div class="panel hero-auth" id="heroAuth">
@@ -77,8 +79,8 @@
 
   <!-- INSIGHTS -->
   <section class="view" data-view="insights">
-    <h1>Premium Insights</h1>
-    <p class="section-sub">A multi-strategy signal engine reads market regime (trending, ranging, breakout, quiet) and applies the matching strategy — the same approach behind our live trading bot, adapted here as read-only insight.</p>
+    <h1>Market Insights</h1>
+    <p class="section-sub">Our analysis engine reads each market's structure (trending, ranging, breaking out, quiet) and surfaces a bias with a setup-strength score — market conditions to weigh, not an instruction to trade. Conduct your own analysis and confirm any setup before acting.</p>
 
     <div class="panel">
       <div class="row" style="margin-bottom:4px;">
@@ -89,18 +91,38 @@
 
       <div id="lockedBox" class="locked-box" style="display:none;">
         <div class="icon">🔒</div>
-        <p>Subscribe to unlock live BUY / SELL / HOLD signals for all 12 tracked markets.</p>
+        <p>Subscribe to unlock live market-structure insights for all 12 tracked markets.</p>
         <button id="goPricingBtn">See Pricing — <span id="lockedPrice">R45/month</span></button>
       </div>
 
       <div id="signalsWrap" style="display:none;">
+        <div id="topPickBox"></div>
+        <h3 class="section-title" style="margin-top:24px; font-size:1rem;">All tracked markets</h3>
         <div id="signalsList"></div>
       </div>
     </div>
 
     <div class="disclaimer">
-      Signals come from an automated regime + strategy-selection engine (ATR-based volatility read, EMA trend, candle-range/trend/breakout/mean-reversion strategies). Crypto uses real exchange candles; GBP/USD and Gold use our own tracked price history until more data builds up. This is informational only, not financial advice — trading carries risk.
+      Insights come from an automated structure-classification engine (ATR-based volatility read, EMA trend, candle-range/trend/breakout/mean-reversion models). Crypto uses real exchange candles; GBP/USD and Gold use our own tracked price history until more data builds up. This is informational only, not financial advice, and not a trade instruction — trading carries risk of loss. See our <a href="#/risk">Risk Disclosure</a>.
     </div>
+  </section>
+
+  <!-- TRACK RECORD -->
+  <section class="view" data-view="track">
+    <h1>Track Record</h1>
+    <p class="section-sub">Every setup the engine has surfaced, wins and losses both — this is what "does it actually work" should look like: a record, not a highlight reel.</p>
+
+    <div class="hero-stats" id="trackStats" style="margin-bottom:20px;"></div>
+
+    <div class="panel">
+      <div class="chart-wrap-table" style="overflow-x:auto;">
+        <table class="track-table">
+          <thead><tr><th>Date</th><th>Market</th><th>Bias</th><th>Strategy</th><th>Confidence</th><th>Status</th><th>Best level</th></tr></thead>
+          <tbody id="trackRows"><tr><td colspan="7" class="note">Loading…</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="disclaimer">Historical accuracy does not guarantee future results. "Open" setups haven't yet hit a stop-loss or final target.</div>
   </section>
 
   <!-- PRICING -->
@@ -145,12 +167,25 @@
       <button id="acctGoHeroBtn">Create an account / log in →</button>
     </div>
   </section>
+
+  <!-- RISK DISCLOSURE -->
+  <section class="view" data-view="risk">
+    <h1>Risk Disclosure</h1>
+    <p class="section-sub">Please read this before using TradingAnalysis.</p>
+    <div class="panel" style="max-width:760px;">
+      <p><strong>Informational only.</strong> TradingAnalysis provides data-driven market analysis and trading intelligence designed to help you identify and evaluate potential market opportunities. It is not financial advice, not a recommendation, and not an instruction to buy or sell any instrument. We are not a licensed financial services provider or broker, and nothing on this site should be treated as personalised advice.</p>
+      <p><strong>You make your own decisions.</strong> Every insight, bias, setup-strength score, and Entry/TP/SL reference level shown here is generated by an automated structure-classification model for informational purposes. You are solely responsible for conducting your own analysis, confirming any setup, and deciding whether, when, and how to trade. We do not execute trades, hold funds, or manage any brokerage account on your behalf.</p>
+      <p><strong>No guaranteed outcome.</strong> Trading forex, CFDs, crypto-assets and other leveraged or volatile instruments carries a high level of risk and can result in the loss of some or all of your capital. Past performance — including any historical accuracy statistics shown on this platform — does not guarantee future results.</p>
+      <p><strong>Verify before you rely on this.</strong> If you are unsure whether a provider is authorised to offer a particular financial service in your jurisdiction, check with your local regulator (in South Africa, the FSCA) before acting. Consider speaking to a licensed financial advisor for advice suited to your own circumstances.</p>
+      <p><strong>Subscriptions.</strong> Your R45/month subscription pays for access to this analysis platform, not for a specific trading outcome. Cancel anytime by not renewing your next payment.</p>
+    </div>
+  </section>
 </main>
 
 <footer class="footer">
   <div class="footer-inner">
     <div>POWERED BY: <a href="https://iytechnologies.co.za" target="_blank" rel="noopener"><strong>Inzalo Yamaqhawe Technologies</strong></a></div>
-    <div>Questions? Reach us via PayPal.me/IYTechnologies for now.</div>
+    <div><a href="#/risk">Risk Disclosure</a> · Questions? Reach us via PayPal.me/IYTechnologies for now.</div>
   </div>
 </footer>
 

@@ -1,3 +1,8 @@
+// Display-only labels: the engine's internal signal stays BUY/SELL/HOLD
+// (used for TP/SL direction math), but we never present it as a buy/sell
+// instruction — this is a market-structure read, not a trade instruction.
+const BIAS_LABEL = { BUY: 'BULLISH BIAS', SELL: 'BEARISH BIAS', HOLD: 'NEUTRAL' };
+
 // ---------- Nav / routing (simple hash-based SPA, no framework needed) ----------
 const views = document.querySelectorAll('.view');
 const navItems = document.querySelectorAll('.mainnav-item');
@@ -13,9 +18,46 @@ function routeFromHash() {
   const name = (window.location.hash.replace('#/', '') || 'dashboard').trim();
   const valid = [...views].some(v => v.dataset.view === name);
   showView(valid ? name : 'dashboard');
+  if (name === 'track') loadTrackRecord();
 }
 window.addEventListener('hashchange', routeFromHash);
 routeFromHash();
+
+async function loadTrackRecord() {
+  const statsHost = document.getElementById('trackStats');
+  const rowsHost = document.getElementById('trackRows');
+  try {
+    const res = await fetch('/api/performance');
+    const data = await res.json();
+    const s = data.stats;
+    statsHost.innerHTML = `
+      <div class="stat-chip"><div class="n">${s.total}</div><div class="l">Setups logged</div></div>
+      <div class="stat-chip"><div class="n">${s.winRate != null ? s.winRate + '%' : '—'}</div><div class="l">Win rate</div></div>
+      <div class="stat-chip"><div class="n">${s.wins}</div><div class="l">Reached TP4</div></div>
+      <div class="stat-chip"><div class="n">${s.losses}</div><div class="l">Stopped out</div></div>
+      <div class="stat-chip"><div class="n">${s.open}</div><div class="l">Still open</div></div>
+    `;
+    if (!data.recent.length) {
+      rowsHost.innerHTML = `<tr><td colspan="7" class="note">No setups logged yet — check back once the engine has surfaced a few.</td></tr>`;
+      return;
+    }
+    rowsHost.innerHTML = data.recent.map(r => {
+      const outcomeClass = r.status === 'open' ? 'open' : r.outcome === 'TP4' ? 'win' : r.outcome === 'SL' ? 'loss' : 'invalidated';
+      const outcomeText = r.status === 'open' ? 'Open' : (r.outcome || '—');
+      return `<tr>
+        <td>${new Date(r.created_at).toLocaleDateString()}</td>
+        <td>${r.label || r.instrument}</td>
+        <td>${BIAS_LABEL[r.side] || r.side}</td>
+        <td>${r.strategy || '—'}</td>
+        <td>${r.confidence != null ? r.confidence + '/100' : '—'}</td>
+        <td><span class="outcome-pill ${outcomeClass}">${outcomeText}</span></td>
+        <td>${r.best_level || '—'}</td>
+      </tr>`;
+    }).join('');
+  } catch (e) {
+    rowsHost.innerHTML = `<tr><td colspan="7" class="note">Failed to load track record.</td></tr>`;
+  }
+}
 
 document.getElementById('goPricingBtn')?.addEventListener('click', () => showView('pricing'));
 
@@ -289,7 +331,9 @@ function updateSidePanel(key, data) {
 
   const insight = data.insight;
   const hasSignal = data.premium && insight;
-  document.getElementById('spSignal').textContent = hasSignal ? `${insight.signal}${insight.strategy ? ' · ' + insight.strategy : ''}` : (data.premium ? 'HOLD' : '🔒');
+  document.getElementById('spSignal').textContent = hasSignal
+    ? `${BIAS_LABEL[insight.signal]}${insight.confidence != null ? ` (${insight.confidence}/100)` : ''}`
+    : (data.premium ? 'NEUTRAL' : '🔒');
   document.getElementById('spRegime').textContent = hasSignal ? (insight.regime || '').replace('_', ' ').toLowerCase() : '—';
 
   const levels = insight?.levels;
@@ -352,7 +396,7 @@ async function openChart(key, label) {
       const insight = data.insight;
       const sigColor = insight?.signal === 'BUY' ? '#2fd480' : insight?.signal === 'SELL' ? '#ff5d6c' : '#8b98ad';
       legend.innerHTML = `<span style="color:#f2b84b;">■</span> EMA8 &nbsp; <span style="color:#ff5d6c;">■</span> EMA21` +
-        (insight ? ` &nbsp;·&nbsp; Signal: <strong style="color:${sigColor};">${insight.signal}</strong>${insight.strategy ? ` (${insight.strategy})` : ''}` : '');
+        (insight ? ` &nbsp;·&nbsp; <strong style="color:${sigColor};">${BIAS_LABEL[insight.signal]}</strong>${insight.confidence != null ? ` (${insight.confidence}/100)` : ''}` : '');
     } else {
       enableDrawing(false);
       document.getElementById('chartLockedNote').style.display = 'block';
@@ -519,13 +563,38 @@ checkBtn.addEventListener('click', async () => {
     if (!res.ok) { insightsMsg.textContent = data.error || 'Something went wrong.'; return; }
     insightsMsg.textContent = `Active — renews/expires ${new Date(data.expiresAt).toLocaleDateString()}`;
     signalsWrap.style.display = 'block';
+
+    const topPickBox = document.getElementById('topPickBox');
+    const p = data.topPick;
+    topPickBox.innerHTML = !p ? `
+      <div class="top-pick"><span class="tp-empty">No high-confidence setup across any tracked market right now — all 12 are neutral or low-conviction. Check back soon rather than forcing a trade.</span></div>
+    ` : `
+      <div class="top-pick">
+        <div class="eyebrow">⭐ Best opportunity right now</div>
+        <div class="tp-head">
+          <div class="tp-name">${p.label} — ${BIAS_LABEL[p.signal]}</div>
+          <div class="badge ${p.signal}">${p.confidence}/100</div>
+        </div>
+        <div class="regime" style="margin-bottom:8px;">${(p.regime || '').replace('_', ' ').toLowerCase()}${p.strategy ? ' · ' + p.strategy : ''}</div>
+        <div class="sig-note" style="margin-bottom:8px;">${p.note}</div>
+        ${p.levels ? `
+          <div class="levels-strip">
+            <span class="level-chip sl">SL <b>${p.levels.sl}</b></span>
+            <span class="level-chip">TP1 <b>${p.levels.tp1}</b></span>
+            <span class="level-chip">TP2 <b>${p.levels.tp2}</b></span>
+            <span class="level-chip">TP3 <b>${p.levels.tp3}</b></span>
+            <span class="level-chip tp4">TP4 <b>${p.levels.tp4}</b> (${p.levels.riskReward})</span>
+          </div>` : ''}
+      </div>
+    `;
+
     signalsList.innerHTML = data.signals.map(s => `
       <div class="signal-row">
         <div>
           <div class="name">${s.label}</div>
           <div class="regime">${(s.regime || '').replace('_', ' ').toLowerCase() || ''}${s.strategy ? ' · ' + s.strategy : ''}</div>
         </div>
-        <div class="badge ${s.signal}">${s.signal}</div>
+        <div class="badge ${s.signal}">${BIAS_LABEL[s.signal]}${s.confidence != null ? ` · ${s.confidence}/100` : ''}</div>
         <div></div>
         <div class="sig-note">${s.note}</div>
         ${s.levels ? `

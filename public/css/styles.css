@@ -1,15 +1,20 @@
 :root {
-  --bg: #0a0e14;
-  --bg-soft: #0d1320;
-  --panel: #121926;
-  --panel-2: #161f2e;
-  --border: #223046;
-  --text: #e7edf7;
-  --muted: #8b98ad;
+  /* Aligned to the IYTECH brand palette (PROJECTS/inzaloyamaqhawe_tech) —
+     same bg/surface/border/text/brand-blue tokens. --up/--down/--gold are
+     the one deliberate exception: a trading dashboard needs green/red
+     price movement and a warm accent to tell EMA/TP lines apart from the
+     blue price line, which the marketing site never needed. */
+  --bg: #0b1220;
+  --bg-soft: #081426;
+  --panel: #111a2e;
+  --panel-2: #0f1c33;
+  --border: #273454;
+  --text: #f3f6ff;
+  --muted: #cdd3ec;
   --up: #2fd480;
   --down: #ff5d6c;
   --brand: #4f8cff;
-  --brand-deep: #2f5fd6;
+  --brand-deep: #2f6de6;
   --gold: #f2b84b;
   --radius: 14px;
   --shell-max: 1180px;
@@ -232,6 +237,26 @@ button:disabled { opacity: .6; cursor: default; }
 .plan-price span { font-size: 1rem; color: var(--muted); font-weight: 500; }
 .plan-list { list-style: none; padding: 0; margin: 16px 0; display: grid; gap: 8px; font-size: .9rem; color: var(--text); }
 .plan-list li::before { content: "✓ "; color: var(--up); font-weight: 800; }
+
+/* ---------- Top pick ---------- */
+.top-pick {
+  border: 1px solid rgba(242,184,75,.4); background: linear-gradient(135deg, rgba(242,184,75,.1), transparent);
+  border-radius: 16px; padding: 20px;
+}
+.top-pick .eyebrow { margin-bottom: 6px; }
+.top-pick .tp-head { display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 10px; margin-bottom: 10px; }
+.top-pick .tp-name { font-size: 1.2rem; font-weight: 800; }
+.top-pick .tp-empty { color: var(--muted); }
+
+/* ---------- Track record ---------- */
+.track-table { width: 100%; border-collapse: collapse; font-size: .85rem; min-width: 640px; }
+.track-table th { text-align: left; color: var(--muted); font-weight: 600; font-size: .74rem; text-transform: uppercase; letter-spacing: .04em; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+.track-table td { padding: 9px 10px; border-bottom: 1px solid var(--border); }
+.outcome-pill { padding: 3px 9px; border-radius: 999px; font-size: .74rem; font-weight: 700; }
+.outcome-pill.win { background: rgba(47,212,128,.14); color: var(--up); }
+.outcome-pill.loss { background: rgba(255,93,108,.14); color: var(--down); }
+.outcome-pill.open { background: rgba(79,140,255,.14); color: var(--brand); }
+.outcome-pill.invalidated { background: rgba(205,211,236,.1); color: var(--muted); }
 
 /* ---------- Footer ---------- */
 .footer { border-top: 1px solid var(--border); margin-top: 40px; }

@@ -191,12 +191,34 @@ function computeLevels(entry, side, atrNow, strategy) {
   return { entry: round(entry), sl: round(entry - dir * slDist), tp1, tp2, tp3, tp4, riskReward: `1:${RISK_REWARD_TO_TP4}` };
 }
 
+// A rough 0-100 "setup strength" — how cleanly the regime conditions were
+// met, not a probability of profit. Trend strength scales with how far the
+// EMA spread exceeds the minimum required multiple of ATR; breakout scales
+// with how far the range exceeds the minimum expansion; CRT/mean-reversion
+// (wick-rejection setups) get a flat moderate score since their trigger is
+// binary (the rejection either happened or didn't) rather than a spectrum.
+function computeConfidence(strategy, regime, closed, atrNow, atrBaseline) {
+  if (strategy === 'TREND') {
+    const closes = closed.map(c => c.close);
+    const spread = Math.abs(emaSeries(closes, EMA_FAST_PERIOD).at(-1) - emaSeries(closes, EMA_SLOW_PERIOD).at(-1));
+    const ratio = spread / (TREND_MIN_EMA_SPREAD_ATR * atrNow); // 1.0 = just barely qualified
+    return Math.max(50, Math.min(95, Math.round(50 + (ratio - 1) * 25)));
+  }
+  if (strategy === 'BRK') {
+    const lastRange = closed.at(-1).high - closed.at(-1).low;
+    const ratio = lastRange / (1.5 * atrBaseline);
+    return Math.max(50, Math.min(95, Math.round(50 + (ratio - 1) * 20)));
+  }
+  return 65; // CRT / MREV: binary rejection trigger, flat moderate confidence
+}
+
 // Runs the full engine on a chronological array of {open,high,low,close}
-// candles and returns a display-ready result.
+// candles and returns a display-ready result. Framed as market-structure
+// insight, not a buy/sell instruction — the user makes their own call.
 function runEngine(closed) {
   const { regime, atrNow, atrBaseline } = classifyRegime(closed);
   if (regime === 'NO_DATA') {
-    return { signal: 'HOLD', regime, strategy: null, note: 'Gathering data — check back soon for a confident signal.' };
+    return { signal: 'HOLD', regime, strategy: null, confidence: null, note: 'Gathering data — check back soon for a clearer read.' };
   }
   const { strategy, signal } = selectSignal(closed, regime, atrNow, atrBaseline);
   if (!signal) {
@@ -204,16 +226,20 @@ function runEngine(closed) {
       signal: 'HOLD',
       regime,
       strategy: null,
-      note: `Regime: ${regime.replace('_', ' ').toLowerCase()} — no high-conviction setup right now. Informational only, not financial advice.`,
+      confidence: null,
+      note: `Structure: ${regime.replace('_', ' ').toLowerCase()} — no clear directional setup right now. Informational only; conduct your own analysis before trading.`,
     };
   }
   const levels = computeLevels(closed.at(-1).close, signal.side, atrNow, strategy);
+  const confidence = computeConfidence(strategy, regime, closed, atrNow, atrBaseline);
+  const biasWord = signal.side === 'BUY' ? 'bullish' : 'bearish';
   return {
     signal: signal.side,
     regime,
     strategy,
+    confidence,
     levels,
-    note: `${STRATEGY_LABEL[strategy]} in a ${regime.replace('_', ' ').toLowerCase()} regime (ATR ${atrNow.toFixed(4)}), risk:reward ${levels.riskReward} to TP4. Informational only, not financial advice — not a trade instruction.`,
+    note: `${STRATEGY_LABEL[strategy]} suggests a ${biasWord} scenario in a ${regime.replace('_', ' ').toLowerCase()} structure (setup strength ${confidence}/100). Informational only — conduct your own analysis and risk assessment before making any trading decision.`,
   };
 }
 
