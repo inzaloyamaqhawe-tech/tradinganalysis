@@ -1,5 +1,6 @@
 const express = require('express');
 const cors = require('cors');
+const crypto = require('crypto');
 const { createMemoryStorage, createPgStorage } = require('./storage');
 const { runEngine, buildSyntheticCandles, emaSeries, EMA_FAST_PERIOD, EMA_SLOW_PERIOD } = require('./signals');
 
@@ -152,6 +153,75 @@ app.get('/api/config', (req, res) => {
   res.json({ demoMode: DEMO_MODE, payLink: PAYPAL_LINK, price: PRICE_MONTHLY });
 });
 
+// ---- Accounts: email+password with an opaque session token, so a visitor
+// signs up once instead of retyping their email everywhere. Passwords are
+// hashed with scrypt (Node's built-in crypto — no extra dependency).
+function hashPassword(password) {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const hash = crypto.scryptSync(password, salt, 64).toString('hex');
+  return `${salt}:${hash}`;
+}
+function verifyPassword(password, stored) {
+  if (!stored || !stored.includes(':')) return false;
+  const [salt, hash] = stored.split(':');
+  const candidate = crypto.scryptSync(password, salt, 64).toString('hex');
+  const a = Buffer.from(hash, 'hex'), b = Buffer.from(candidate, 'hex');
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+// Resolves req.authEmail from a Bearer session token, if one was sent.
+// Never blocks the request — routes that need auth check req.authEmail themselves.
+app.use(async (req, res, next) => {
+  const header = req.headers.authorization || '';
+  const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+  req.authEmail = token ? await store.getSessionEmail(token) : null;
+  next();
+});
+
+function isValidEmail(email) { return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email); }
+
+app.post('/api/auth/signup', async (req, res) => {
+  const email = String(req.body?.email || '').trim().toLowerCase();
+  const password = String(req.body?.password || '');
+  if (!isValidEmail(email)) return res.status(400).json({ error: 'Enter a valid email address.' });
+  if (password.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters.' });
+
+  const existing = await store.getSubscriber(email);
+  if (existing?.password_hash) return res.status(409).json({ error: 'An account already exists for this email — log in instead.' });
+
+  await store.setPassword(email, hashPassword(password));
+  const token = crypto.randomBytes(24).toString('hex');
+  await store.createSession(token, email);
+  const sub = await store.getSubscriber(email);
+  res.json({ ok: true, token, email, status: sub?.status || 'pending' });
+});
+
+app.post('/api/auth/login', async (req, res) => {
+  const email = String(req.body?.email || '').trim().toLowerCase();
+  const password = String(req.body?.password || '');
+  const sub = await store.getSubscriber(email);
+  if (!sub?.password_hash || !verifyPassword(password, sub.password_hash)) {
+    return res.status(401).json({ error: 'Incorrect email or password.' });
+  }
+  const token = crypto.randomBytes(24).toString('hex');
+  await store.createSession(token, email);
+  res.json({ ok: true, token, email, status: sub.status });
+});
+
+app.post('/api/auth/logout', async (req, res) => {
+  const header = req.headers.authorization || '';
+  const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+  if (token) await store.deleteSession(token);
+  res.json({ ok: true });
+});
+
+app.get('/api/auth/me', async (req, res) => {
+  if (!req.authEmail) return res.status(401).json({ error: 'Not logged in.' });
+  const sub = await store.getSubscriber(req.authEmail);
+  const active = !!(sub && sub.status === 'active' && sub.expires_at && new Date(sub.expires_at) > new Date());
+  res.json({ email: req.authEmail, status: sub?.status || 'pending', expiresAt: sub?.expires_at || null, active });
+});
+
 app.get('/api/prices', (req, res) => {
   const assets = ALL_KEYS.map(key => ({
     key,
@@ -164,8 +234,8 @@ app.get('/api/prices', (req, res) => {
 });
 
 app.post('/api/subscribe', async (req, res) => {
-  const email = String(req.body?.email || '').trim().toLowerCase();
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+  const email = req.authEmail || String(req.body?.email || '').trim().toLowerCase();
+  if (!isValidEmail(email)) {
     return res.status(400).json({ error: 'Enter a valid email address.' });
   }
   await store.upsertPending(email);
@@ -184,14 +254,14 @@ app.post('/api/subscribe', async (req, res) => {
 // flow can be tested end-to-end before real payments/DB are wired in.
 app.post('/api/demo/activate', async (req, res) => {
   if (!DEMO_MODE) return res.status(403).json({ error: 'Demo activation is disabled — real payments are live.' });
-  const email = String(req.body?.email || '').trim().toLowerCase();
+  const email = req.authEmail || String(req.body?.email || '').trim().toLowerCase();
   if (!email) return res.status(400).json({ error: 'email required' });
   await store.activate(email, 30);
   res.json({ ok: true });
 });
 
 app.get('/api/insights', async (req, res) => {
-  const email = String(req.query.email || '').trim().toLowerCase();
+  const email = req.authEmail || String(req.query.email || '').trim().toLowerCase();
   if (!email) return res.status(400).json({ error: 'email is required' });
 
   const sub = await store.getSubscriber(email);
@@ -220,7 +290,7 @@ app.get('/api/history', async (req, res) => {
   const key = String(req.query.key || '');
   if (!ALL_KEYS.includes(key)) return res.status(404).json({ error: 'unknown instrument' });
 
-  const email = String(req.query.email || '').trim().toLowerCase();
+  const email = req.authEmail || String(req.query.email || '').trim().toLowerCase();
   let premium = false;
   if (email) {
     const sub = await store.getSubscriber(email);
@@ -232,7 +302,8 @@ app.get('/api/history', async (req, res) => {
   const payload = {
     key,
     label: LABELS[key],
-    closes,
+    candles, // full OHLC, for candlestick rendering
+    closes,  // convenience array, for line rendering
     high: candles.length ? Math.max(...candles.map(c => c.high)) : null,
     low: candles.length ? Math.min(...candles.map(c => c.low)) : null,
     premium,

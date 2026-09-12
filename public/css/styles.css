@@ -68,13 +68,27 @@ img { max-width: 100%; }
 .view.active { display: block; animation: fadeIn .25s ease; }
 @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 
-.hero { display: flex; flex-wrap: wrap; gap: 24px; align-items: center; justify-content: space-between; margin-bottom: 24px; }
-.hero h1 { font-size: 1.7rem; margin: 0 0 6px; }
-.hero p { color: var(--muted); margin: 0; max-width: 560px; font-size: .95rem; }
+.hero-banner {
+  display: grid; grid-template-columns: 1.4fr 1fr; gap: 28px; align-items: start;
+  margin-bottom: 32px; padding-bottom: 28px; border-bottom: 1px solid var(--border);
+}
+.eyebrow { color: var(--brand); font-size: .78rem; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; margin-bottom: 8px; }
+.hero-copy h1 { font-size: 2rem; line-height: 1.15; margin: 0 0 12px; }
+.hero-copy p { color: var(--muted); margin: 0 0 18px; max-width: 540px; font-size: .96rem; line-height: 1.55; }
+.hero-disclaimer { font-size: .78rem !important; opacity: .75; margin-top: 14px !important; }
 .hero-stats { display: flex; gap: 12px; flex-wrap: wrap; }
 .stat-chip { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 10px 16px; min-width: 120px; }
 .stat-chip .n { font-size: 1.15rem; font-weight: 700; }
 .stat-chip .l { font-size: .72rem; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+
+.hero-auth { margin: 0; }
+.auth-tabs { display: flex; gap: 4px; background: var(--bg-soft); border: 1px solid var(--border); border-radius: 10px; padding: 4px; margin-bottom: 14px; }
+.auth-tab { flex: 1; background: transparent; border: none; color: var(--muted); font-weight: 700; font-size: .85rem; padding: 9px; border-radius: 7px; cursor: pointer; }
+.auth-tab.active { background: rgba(79,140,255,.18); color: var(--text); }
+
+@media (max-width: 900px) {
+  .hero-banner { grid-template-columns: 1fr; }
+}
 
 .section-title { font-size: 1.15rem; margin: 32px 0 4px; }
 .section-sub { color: var(--muted); font-size: .88rem; margin: 0 0 16px; }
@@ -99,22 +113,66 @@ img { max-width: 100%; }
 
 /* ---------- Chart modal ---------- */
 .modal-overlay {
-  display: none; position: fixed; inset: 0; background: rgba(4,7,12,.72);
+  display: none; position: fixed; inset: 0; background: rgba(4,7,12,.78);
   z-index: 100; align-items: center; justify-content: center; padding: 20px;
 }
 .modal-overlay.open { display: flex; }
 .modal-box {
   background: var(--panel); border: 1px solid var(--border); border-radius: 18px;
-  padding: 22px; width: 100%; max-width: 640px; max-height: 90vh; overflow: auto;
+  padding: 20px; width: 100%; max-width: 1100px; height: 88vh; max-height: 860px;
+  overflow: auto; display: flex; flex-direction: column;
 }
-.modal-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 12px; }
+.modal-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 10px; }
 .modal-title { font-size: 1.15rem; font-weight: 700; }
 .modal-sub { color: var(--muted); font-size: .84rem; margin-top: 2px; }
-.chart-wrap { position: relative; width: 100%; height: 260px; background: var(--bg-soft); border-radius: 12px; border: 1px solid var(--border); overflow: hidden; }
+
+.symbol-ribbon { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 8px; margin-bottom: 8px; border-bottom: 1px solid var(--border); }
+.symbol-pill {
+  flex: none; background: var(--bg-soft); border: 1px solid var(--border); color: var(--muted);
+  font-size: .78rem; font-weight: 700; padding: 6px 12px; border-radius: 999px; cursor: pointer; white-space: nowrap;
+}
+.symbol-pill:hover { color: var(--text); }
+.symbol-pill.active { background: rgba(79,140,255,.18); border-color: rgba(79,140,255,.4); color: var(--text); }
+
+.chart-toolbar { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+.tool-group { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; background: var(--bg-soft); border: 1px solid var(--border); border-radius: 10px; padding: 4px 8px; }
+.tool-btn {
+  background: transparent; border: none; color: var(--muted); font-weight: 600; font-size: .8rem;
+  padding: 7px 10px; border-radius: 7px; cursor: pointer; white-space: nowrap;
+}
+.tool-btn:hover { color: var(--text); background: rgba(255,255,255,.05); }
+.tool-btn.active { background: rgba(79,140,255,.18); color: var(--text); }
+.tool-btn:disabled { opacity: .35; cursor: not-allowed; }
+.tool-check { display: flex; align-items: center; gap: 5px; font-size: .78rem; color: var(--muted); padding: 6px 4px; cursor: pointer; }
+.tool-check input { accent-color: var(--brand); }
+
+.chart-main { display: flex; gap: 14px; flex: 1; min-height: 0; }
+.chart-col { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.chart-wrap { position: relative; width: 100%; flex: 1; min-height: 320px; background: var(--bg-soft); border-radius: 12px; border: 1px solid var(--border); overflow: hidden; }
 .chart-wrap canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
 #drawCanvas { cursor: crosshair; }
 .chart-tools { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
 .chart-tools button { padding: 8px 14px; font-size: .82rem; }
+
+.side-panel { flex: none; width: 220px; background: var(--bg-soft); border: 1px solid var(--border); border-radius: 12px; padding: 14px; display: flex; flex-direction: column; gap: 2px; }
+.sp-row { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; font-size: .84rem; }
+.sp-row span { color: var(--muted); }
+.sp-row b { font-variant-numeric: tabular-nums; }
+.sp-row.good b { color: var(--up); }
+.sp-row.bad b { color: var(--down); }
+.sp-divider { height: 1px; background: var(--border); margin: 10px 0; }
+.sp-title { font-size: .78rem; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin-bottom: 4px; }
+.sp-hint { text-transform: none; letter-spacing: 0; opacity: .7; }
+
+@media (max-width: 900px) {
+  .chart-main { flex-direction: column; }
+  .side-panel { width: 100%; }
+}
+
+@media (max-width: 720px) {
+  .modal-overlay { padding: 0; }
+  .modal-box { max-width: none; width: 100vw; height: 100vh; max-height: none; border-radius: 0; }
+}
 
 /* ---------- Panels ---------- */
 .panel {

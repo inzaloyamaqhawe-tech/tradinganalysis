@@ -41,10 +41,13 @@ function fmtPrice(p) {
   return p >= 100 ? p.toLocaleString(undefined, { maximumFractionDigits: 2 }) : p.toLocaleString(undefined, { maximumFractionDigits: 4 });
 }
 
+let lastPricesData = null; // cached /api/prices result, reused by the symbol ribbon + side panel
+
 async function loadPrices() {
   try {
     const res = await fetch('/api/prices');
     const data = await res.json();
+    lastPricesData = data;
     let upCount = 0;
     priceGrid.innerHTML = data.assets.map(a => {
       const cls = a.changePct > 0.001 ? 'up' : a.changePct < -0.001 ? 'down' : 'flat';
@@ -59,6 +62,7 @@ async function loadPrices() {
     }).join('');
     statUp.textContent = `${upCount}/${data.assets.length}`;
     priceGrid.querySelectorAll('.card').forEach(el => el.addEventListener('click', () => openChart(el.dataset.key, el.dataset.label)));
+    if (chartModal.classList.contains('open')) renderSymbolRibbon();
   } catch (e) {
     priceGrid.innerHTML = '<div class="card">Failed to load prices — retrying…</div>';
   }
@@ -70,20 +74,33 @@ setInterval(loadPrices, 30000);
 function rememberEmail(email) { try { localStorage.setItem('ta_email', email); } catch (e) {} }
 function knownEmail() { try { return localStorage.getItem('ta_email') || ''; } catch (e) { return ''; } }
 
-// ---------- Chart modal: click a card to see its data; premium adds EMA overlays + a trendline tool ----------
+// ---------- Chart modal: click a card to see its data. ----------
+// Free: line/candle chart of tracked price history.
+// Premium: + EMA8/EMA21 overlay, the live signal, and drawing tools
+// (trendline, rectangle, and an MT5-style Long/Short position tool that
+// bands a reward zone vs a risk zone off wherever you drag, at a 1:2 R:R —
+// so you can compare your own read of the chart against the algo's).
 const chartModal = document.getElementById('chartModal');
 const chartCanvas = document.getElementById('chartCanvas');
 const drawCanvas = document.getElementById('drawCanvas');
 const chartCtx = chartCanvas.getContext('2d');
 const drawCtx = drawCanvas.getContext('2d');
-let chartState = null; // { closes, ema8, ema21, levels, min, max }
-let drawing = null; // { x1,y1,x2,y2 } trendline the user is sketching
+
+let chartState = null;   // { candles, closes, ema8, ema21, levels }
+let chartType = 'line';  // 'line' | 'candles'
+let activeTool = null;   // 'trendline' | 'hline' | 'rect' | 'fib' | 'position' | null
+let objects = [];        // drawn shapes: { tool, x1,y1,x2,y2 }
+let liveObj = null;      // the shape currently being dragged
+let priceScale = { min: 0, max: 1, h: 0 }; // set by renderChart, reused to label drawn levels
+let currentChartKey = null;
+let showEma8 = true, showEma21 = true;
 
 function resizeCanvases() {
   const wrap = chartCanvas.parentElement;
   const w = wrap.clientWidth, h = wrap.clientHeight;
   [chartCanvas, drawCanvas].forEach(c => { c.width = w; c.height = h; });
   if (chartState) renderChart();
+  redrawObjects();
 }
 window.addEventListener('resize', resizeCanvases);
 
@@ -91,9 +108,12 @@ function priceToY(p, min, max, h) {
   if (max === min) return h / 2;
   return h - ((p - min) / (max - min)) * (h - 20) - 10;
 }
+function yToPrice(y, min, max, h) {
+  return min + ((h - 10 - y) / (h - 20)) * (max - min);
+}
 
 function renderChart() {
-  const { closes, ema8, ema21, levels } = chartState;
+  const { candles, closes, ema8, ema21, levels } = chartState;
   const w = chartCanvas.width, h = chartCanvas.height;
   chartCtx.clearRect(0, 0, w, h);
   if (!closes.length) {
@@ -101,31 +121,59 @@ function renderChart() {
     chartCtx.fillText('Not enough data yet — check back soon.', 14, h / 2);
     return;
   }
-  const all = [...closes, ...(ema8 || []), ...(ema21 || []), ...(levels ? [levels.sl, levels.tp4] : [])];
+  const highs = candles.map(c => c.high), lows = candles.map(c => c.low);
+  const all = [...highs, ...lows, ...(ema8 || []), ...(ema21 || []), ...(levels ? [levels.sl, levels.tp4] : [])];
   const min = Math.min(...all), max = Math.max(...all);
+  priceScale = { min, max, h };
 
-  const plotLine = (series, color, width) => {
-    chartCtx.beginPath(); chartCtx.strokeStyle = color; chartCtx.lineWidth = width;
-    series.forEach((p, i) => {
-      const x = (i / (series.length - 1 || 1)) * w;
-      const y = priceToY(p, min, max, h);
+  if (chartType === 'candles') {
+    const n = candles.length;
+    const slot = w / n;
+    const bodyW = Math.max(1, slot * 0.6);
+    candles.forEach((c, i) => {
+      const x = i * slot + slot / 2;
+      const up = c.close >= c.open;
+      const color = up ? '#2fd480' : '#ff5d6c';
+      chartCtx.strokeStyle = color; chartCtx.fillStyle = color; chartCtx.lineWidth = 1;
+      chartCtx.beginPath();
+      chartCtx.moveTo(x, priceToY(c.high, min, max, h));
+      chartCtx.lineTo(x, priceToY(c.low, min, max, h));
+      chartCtx.stroke();
+      const yOpen = priceToY(c.open, min, max, h), yClose = priceToY(c.close, min, max, h);
+      chartCtx.fillRect(x - bodyW / 2, Math.min(yOpen, yClose), bodyW, Math.max(1, Math.abs(yClose - yOpen)));
+    });
+  } else {
+    // subtle fill under the price line
+    chartCtx.beginPath();
+    closes.forEach((p, i) => {
+      const x = (i / (closes.length - 1 || 1)) * w, y = priceToY(p, min, max, h);
       i === 0 ? chartCtx.moveTo(x, y) : chartCtx.lineTo(x, y);
     });
+    chartCtx.lineTo(w, h); chartCtx.lineTo(0, h); chartCtx.closePath();
+    chartCtx.fillStyle = 'rgba(79,140,255,.08)'; chartCtx.fill();
+
+    const plotLine = (series, color, width) => {
+      chartCtx.beginPath(); chartCtx.strokeStyle = color; chartCtx.lineWidth = width;
+      series.forEach((p, i) => {
+        const x = (i / (series.length - 1 || 1)) * w;
+        const y = priceToY(p, min, max, h);
+        i === 0 ? chartCtx.moveTo(x, y) : chartCtx.lineTo(x, y);
+      });
+      chartCtx.stroke();
+    };
+    plotLine(closes, '#4f8cff', 2);
+  }
+
+  if (ema8 && showEma8) {
+    chartCtx.beginPath(); chartCtx.strokeStyle = '#f2b84b'; chartCtx.lineWidth = 1.4;
+    ema8.forEach((p, i) => { const x = (i / (ema8.length - 1 || 1)) * w, y = priceToY(p, min, max, h); i === 0 ? chartCtx.moveTo(x, y) : chartCtx.lineTo(x, y); });
     chartCtx.stroke();
-  };
-
-  // subtle fill under the price line
-  chartCtx.beginPath();
-  closes.forEach((p, i) => {
-    const x = (i / (closes.length - 1 || 1)) * w, y = priceToY(p, min, max, h);
-    i === 0 ? chartCtx.moveTo(x, y) : chartCtx.lineTo(x, y);
-  });
-  chartCtx.lineTo(w, h); chartCtx.lineTo(0, h); chartCtx.closePath();
-  chartCtx.fillStyle = 'rgba(79,140,255,.08)'; chartCtx.fill();
-
-  plotLine(closes, '#4f8cff', 2);
-  if (ema8) plotLine(ema8, '#f2b84b', 1.4);
-  if (ema21) plotLine(ema21, '#ff5d6c', 1.4);
+  }
+  if (ema21 && showEma21) {
+    chartCtx.beginPath(); chartCtx.strokeStyle = '#ff5d6c'; chartCtx.lineWidth = 1.4;
+    ema21.forEach((p, i) => { const x = (i / (ema21.length - 1 || 1)) * w, y = priceToY(p, min, max, h); i === 0 ? chartCtx.moveTo(x, y) : chartCtx.lineTo(x, y); });
+    chartCtx.stroke();
+  }
 
   if (levels) {
     const drawLevel = (price, color, label) => {
@@ -141,46 +189,158 @@ function renderChart() {
   }
 }
 
-function redrawTrendline() {
+// ---- Drawing tools (trendline / rectangle / long-short position) ----
+function drawOneObject(ctx, o) {
+  const { tool, x1, y1, x2, y2 } = o;
+  if (tool === 'trendline') {
+    ctx.strokeStyle = '#f2b84b'; ctx.lineWidth = 2; ctx.setLineDash([]);
+    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+  } else if (tool === 'hline') {
+    ctx.strokeStyle = '#4f8cff'; ctx.lineWidth = 1.5; ctx.setLineDash([]);
+    ctx.beginPath(); ctx.moveTo(0, y1); ctx.lineTo(drawCanvas.width, y1); ctx.stroke();
+    const price = yToPrice(y1, priceScale.min, priceScale.max, priceScale.h);
+    ctx.font = '10px sans-serif'; ctx.fillStyle = '#4f8cff';
+    ctx.fillText(price.toFixed(4), drawCanvas.width - 60, y1 - 3);
+  } else if (tool === 'rect') {
+    ctx.strokeStyle = '#4f8cff'; ctx.lineWidth = 1.5; ctx.setLineDash([]);
+    ctx.strokeRect(Math.min(x1, x2), Math.min(y1, y2), Math.abs(x2 - x1), Math.abs(y2 - y1));
+  } else if (tool === 'fib') {
+    // Standard retracement levels between the two dragged points (swing high/low).
+    const left = Math.min(x1, x2), width = Math.abs(x2 - x1) || (drawCanvas.width - left);
+    const ratios = [0, 0.236, 0.382, 0.5, 0.618, 1];
+    ctx.font = '10px sans-serif';
+    ratios.forEach(r => {
+      const y = y1 + (y2 - y1) * r;
+      ctx.strokeStyle = 'rgba(242,184,75,.7)'; ctx.setLineDash([3, 3]); ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(left + width, y); ctx.stroke();
+      ctx.setLineDash([]);
+      const price = yToPrice(y, priceScale.min, priceScale.max, priceScale.h);
+      ctx.fillStyle = '#f2b84b'; ctx.fillText(`${(r * 100).toFixed(1)}%  ${price.toFixed(4)}`, left + 4, y - 3);
+    });
+  } else if (tool === 'position') {
+    // Drag from entry (y1) toward your target (y2). Reward zone spans
+    // entry->target; risk zone auto-mirrors on the other side at half that
+    // height (1:2 R:R), same convention as the computed TP/SL ladder.
+    const isLong = y2 < y1; // canvas y shrinks upward = higher price = long
+    const rewardH = Math.abs(y2 - y1);
+    const riskH = rewardH / 2;
+    const left = Math.min(x1, x2), width = Math.abs(x2 - x1) || (drawCanvas.width - left);
+    const rewardTop = Math.min(y1, y2);
+    const riskTop = isLong ? y1 : y1 - riskH;
+
+    ctx.fillStyle = 'rgba(47,212,128,.18)';
+    ctx.fillRect(left, rewardTop, width, rewardH);
+    ctx.fillStyle = 'rgba(255,93,108,.18)';
+    ctx.fillRect(left, riskTop, width, riskH);
+
+    ctx.strokeStyle = '#f2b84b'; ctx.setLineDash([4, 4]); ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(left, y1); ctx.lineTo(left + width, y1); ctx.stroke();
+    ctx.setLineDash([]);
+
+    const entryPrice = yToPrice(y1, priceScale.min, priceScale.max, priceScale.h);
+    const targetPrice = yToPrice(y2, priceScale.min, priceScale.max, priceScale.h);
+    const stopPrice = isLong ? entryPrice - (entryPrice - targetPrice) / 2 : entryPrice + (targetPrice - entryPrice) / 2;
+    ctx.font = '11px sans-serif'; ctx.fillStyle = '#e7edf7';
+    ctx.fillText(`${isLong ? 'LONG' : 'SHORT'} entry ${entryPrice.toFixed(4)}`, left + 4, y1 - 4);
+    ctx.fillStyle = '#2fd480'; ctx.fillText(`target ${targetPrice.toFixed(4)}`, left + 4, rewardTop + 12);
+    ctx.fillStyle = '#ff5d6c'; ctx.fillText(`stop ${stopPrice.toFixed(4)}`, left + 4, riskTop + riskH - 4);
+  }
+}
+
+function redrawObjects() {
   drawCtx.clearRect(0, 0, drawCanvas.width, drawCanvas.height);
-  if (!drawing) return;
-  drawCtx.strokeStyle = '#f2b84b'; drawCtx.lineWidth = 2; drawCtx.setLineDash([]);
-  drawCtx.beginPath(); drawCtx.moveTo(drawing.x1, drawing.y1); drawCtx.lineTo(drawing.x2, drawing.y2); drawCtx.stroke();
+  objects.forEach(o => drawOneObject(drawCtx, o));
+  if (liveObj) drawOneObject(drawCtx, liveObj);
 }
 
 function enableDrawing(enabled) {
   drawCanvas.style.pointerEvents = enabled ? 'auto' : 'none';
+  document.querySelectorAll('#drawToolGroup .tool-btn').forEach(b => b.disabled = !enabled);
 }
 
-let isDrawingLine = false;
+function setTool(tool) {
+  activeTool = tool;
+  document.querySelectorAll('#drawToolGroup [data-tool]').forEach(b => b.classList.toggle('active', b.dataset.tool === tool));
+}
+document.querySelectorAll('#drawToolGroup [data-tool]').forEach(btn => btn.addEventListener('click', () => setTool(btn.dataset.tool)));
+document.getElementById('clearDrawBtn').addEventListener('click', () => { objects = []; liveObj = null; redrawObjects(); });
+
+document.querySelectorAll('[data-type]').forEach(btn => btn.addEventListener('click', () => {
+  chartType = btn.dataset.type;
+  document.querySelectorAll('[data-type]').forEach(b => b.classList.toggle('active', b.dataset.type === chartType));
+  if (chartState) renderChart();
+}));
+
+document.getElementById('toggleEma8').addEventListener('change', (e) => { showEma8 = e.target.checked; if (chartState) renderChart(); });
+document.getElementById('toggleEma21').addEventListener('change', (e) => { showEma21 = e.target.checked; if (chartState) renderChart(); });
+
+function renderSymbolRibbon() {
+  const ribbon = document.getElementById('symbolRibbon');
+  if (!lastPricesData) { ribbon.innerHTML = ''; return; }
+  ribbon.innerHTML = lastPricesData.assets.map(a => `
+    <button class="symbol-pill ${a.key === currentChartKey ? 'active' : ''}" data-key="${a.key}" data-label="${a.label}">${a.label}</button>
+  `).join('');
+  ribbon.querySelectorAll('.symbol-pill').forEach(btn => btn.addEventListener('click', () => openChart(btn.dataset.key, btn.dataset.label)));
+}
+
+function updateSidePanel(key, data) {
+  const priceEntry = lastPricesData?.assets.find(a => a.key === key);
+  document.getElementById('spPrice').textContent = priceEntry?.price != null ? fmtPrice(priceEntry.price) : '—';
+
+  const insight = data.insight;
+  const hasSignal = data.premium && insight;
+  document.getElementById('spSignal').textContent = hasSignal ? `${insight.signal}${insight.strategy ? ' · ' + insight.strategy : ''}` : (data.premium ? 'HOLD' : '🔒');
+  document.getElementById('spRegime').textContent = hasSignal ? (insight.regime || '').replace('_', ' ').toLowerCase() : '—';
+
+  const levels = insight?.levels;
+  const setRow = (id, val) => document.getElementById(id).textContent = val != null ? val : '—';
+  setRow('spEntry', levels?.entry);
+  setRow('spTp1', levels?.tp1);
+  setRow('spTp2', levels?.tp2);
+  setRow('spTp3', levels?.tp3);
+  setRow('spTp4', levels?.tp4);
+  setRow('spSl', levels?.sl);
+  document.getElementById('spLockedNote').style.display = data.premium ? 'none' : 'block';
+}
+
+let isDragging = false;
 drawCanvas.addEventListener('mousedown', (e) => {
+  if (!activeTool) return;
   const r = drawCanvas.getBoundingClientRect();
-  drawing = { x1: e.clientX - r.left, y1: e.clientY - r.top, x2: e.clientX - r.left, y2: e.clientY - r.top };
-  isDrawingLine = true;
+  liveObj = { tool: activeTool, x1: e.clientX - r.left, y1: e.clientY - r.top, x2: e.clientX - r.left, y2: e.clientY - r.top };
+  isDragging = true;
 });
 drawCanvas.addEventListener('mousemove', (e) => {
-  if (!isDrawingLine || !drawing) return;
+  if (!isDragging || !liveObj) return;
   const r = drawCanvas.getBoundingClientRect();
-  drawing.x2 = e.clientX - r.left; drawing.y2 = e.clientY - r.top;
-  redrawTrendline();
+  liveObj.x2 = e.clientX - r.left; liveObj.y2 = e.clientY - r.top;
+  redrawObjects();
 });
-window.addEventListener('mouseup', () => { isDrawingLine = false; });
+window.addEventListener('mouseup', () => {
+  if (isDragging && liveObj) { objects.push(liveObj); liveObj = null; redrawObjects(); }
+  isDragging = false;
+});
 
 async function openChart(key, label) {
+  currentChartKey = key;
   document.getElementById('chartTitle').textContent = label;
   document.getElementById('chartSub').textContent = 'Loading…';
   document.getElementById('chartLegend').textContent = '';
   document.getElementById('chartLockedNote').style.display = 'none';
   document.getElementById('chartTools').innerHTML = '<span class="note" id="chartLegend"></span>';
-  drawing = null;
+  objects = []; liveObj = null; activeTool = null;
+  document.querySelectorAll('#drawToolGroup [data-tool]').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('[data-tool]').forEach(b => b.classList.remove('active'));
   chartModal.classList.add('open');
+  renderSymbolRibbon();
   resizeCanvases();
 
-  const email = knownEmail();
+  const email = currentUser?.email || knownEmail();
   try {
-    const res = await fetch(`/api/history?key=${encodeURIComponent(key)}${email ? `&email=${encodeURIComponent(email)}` : ''}`);
+    const res = await fetch(`/api/history?key=${encodeURIComponent(key)}${email ? `&email=${encodeURIComponent(email)}` : ''}`, { headers: authHeaders() });
     const data = await res.json();
-    chartState = { closes: data.closes || [], ema8: data.ema8, ema21: data.ema21, levels: data.insight?.levels };
+    chartState = { candles: data.candles || [], closes: data.closes || [], ema8: data.ema8, ema21: data.ema21, levels: data.insight?.levels };
+    updateSidePanel(key, data);
     resizeCanvases();
 
     const rangeTxt = data.high != null ? `Range (tracked window): ${data.low} – ${data.high}` : '';
@@ -193,11 +353,6 @@ async function openChart(key, label) {
       const sigColor = insight?.signal === 'BUY' ? '#2fd480' : insight?.signal === 'SELL' ? '#ff5d6c' : '#8b98ad';
       legend.innerHTML = `<span style="color:#f2b84b;">■</span> EMA8 &nbsp; <span style="color:#ff5d6c;">■</span> EMA21` +
         (insight ? ` &nbsp;·&nbsp; Signal: <strong style="color:${sigColor};">${insight.signal}</strong>${insight.strategy ? ` (${insight.strategy})` : ''}` : '');
-      const toolsHost = document.getElementById('chartTools');
-      const clearBtn = document.createElement('button');
-      clearBtn.className = 'secondary'; clearBtn.textContent = '✏️ Clear my trendline';
-      clearBtn.addEventListener('click', () => { drawing = null; redrawTrendline(); });
-      toolsHost.appendChild(clearBtn);
     } else {
       enableDrawing(false);
       document.getElementById('chartLockedNote').style.display = 'block';
@@ -211,19 +366,101 @@ document.getElementById('chartClose').addEventListener('click', () => chartModal
 chartModal.addEventListener('click', (e) => { if (e.target === chartModal) chartModal.classList.remove('open'); });
 document.getElementById('chartPricingLink')?.addEventListener('click', () => chartModal.classList.remove('open'));
 
+// ---------- Auth: one account, used everywhere instead of retyping email ----------
+let authToken = null;
+try { authToken = localStorage.getItem('ta_token'); } catch (e) {}
+let currentUser = null; // { email, status, expiresAt, active }
+
+function authHeaders() { return authToken ? { Authorization: `Bearer ${authToken}` } : {}; }
+function setToken(token) { authToken = token; try { localStorage.setItem('ta_token', token); } catch (e) {} }
+function clearToken() { authToken = null; currentUser = null; try { localStorage.removeItem('ta_token'); } catch (e) {} }
+
+async function refreshMe() {
+  if (!authToken) { currentUser = null; updateAuthUI(); return; }
+  try {
+    const res = await fetch('/api/auth/me', { headers: authHeaders() });
+    if (!res.ok) { clearToken(); } else { currentUser = await res.json(); }
+  } catch (e) { /* leave currentUser as-is on a network blip */ }
+  updateAuthUI();
+}
+
+function updateAuthUI() {
+  const loggedIn = !!currentUser;
+  document.getElementById('authLoggedOut').style.display = loggedIn ? 'none' : 'block';
+  document.getElementById('authLoggedIn').style.display = loggedIn ? 'block' : 'none';
+  document.getElementById('authPill').style.display = loggedIn ? 'inline-block' : 'none';
+  document.getElementById('acctLoggedInBox').style.display = loggedIn ? 'block' : 'none';
+  document.getElementById('acctLoggedOutBox').style.display = loggedIn ? 'none' : 'block';
+
+  if (loggedIn) {
+    document.getElementById('authPill').textContent = currentUser.email;
+    document.getElementById('authWhoEmail').textContent = currentUser.email;
+    document.getElementById('authStatusNote').textContent = currentUser.active
+      ? `Premium active — expires ${new Date(currentUser.expiresAt).toLocaleDateString()}.`
+      : 'No active subscription yet.';
+    document.getElementById('acctEmailShown').textContent = currentUser.email;
+    document.getElementById('acctStatus').textContent = currentUser.active ? 'Active' : (currentUser.status || 'pending');
+    document.getElementById('acctExpires').textContent = currentUser.expiresAt ? new Date(currentUser.expiresAt).toLocaleDateString() : '—';
+
+    // No more retyping email on every screen — prefill + lock it in from the session.
+    [subEmailInput, checkEmailInput].forEach(el => { el.value = currentUser.email; el.readOnly = true; });
+  } else {
+    [subEmailInput, checkEmailInput].forEach(el => { el.readOnly = false; });
+  }
+}
+
+document.querySelectorAll('.auth-tab').forEach(tab => tab.addEventListener('click', () => {
+  document.querySelectorAll('.auth-tab').forEach(t => t.classList.toggle('active', t === tab));
+  document.getElementById('authSubmitBtn').textContent = tab.dataset.mode === 'signup' ? 'Create free account' : 'Log in';
+  document.getElementById('authMsg').textContent = '';
+}));
+
+document.getElementById('authSubmitBtn').addEventListener('click', async () => {
+  const mode = document.querySelector('.auth-tab.active').dataset.mode;
+  const email = document.getElementById('authEmail').value.trim();
+  const password = document.getElementById('authPassword').value;
+  const msg = document.getElementById('authMsg');
+  if (!email || !password) { msg.textContent = 'Enter both email and password.'; return; }
+  try {
+    const res = await fetch(`/api/auth/${mode}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password }),
+    });
+    const data = await res.json();
+    if (!res.ok) { msg.textContent = data.error || 'Something went wrong.'; return; }
+    setToken(data.token);
+    msg.textContent = '';
+    await refreshMe();
+  } catch (e) {
+    msg.textContent = 'Network error — try again.';
+  }
+});
+
+async function logout() {
+  try { await fetch('/api/auth/logout', { method: 'POST', headers: authHeaders() }); } catch (e) {}
+  clearToken();
+  updateAuthUI();
+}
+document.getElementById('logoutBtn').addEventListener('click', logout);
+document.getElementById('acctLogoutBtn').addEventListener('click', logout);
+document.getElementById('goInsightsFromHero').addEventListener('click', () => showView('insights'));
+document.getElementById('acctPricingBtn').addEventListener('click', () => showView('pricing'));
+document.getElementById('acctGoHeroBtn').addEventListener('click', () => showView('dashboard'));
+
 // ---------- Pricing: subscribe + demo simulate ----------
 const subBtn = document.getElementById('subBtn');
 const demoBtn = document.getElementById('demoBtn');
 const subResult = document.getElementById('subResult');
+const subEmailInput = document.getElementById('subEmail');
+const checkEmailInput = document.getElementById('checkEmail');
 
 subBtn.addEventListener('click', async () => {
-  const email = document.getElementById('subEmail').value.trim();
-  if (!email) { subResult.textContent = 'Enter your email first.'; return; }
-  rememberEmail(email);
+  const email = currentUser?.email || subEmailInput.value.trim();
+  if (!email) { subResult.textContent = 'Enter your email first, or create an account on the Dashboard.'; return; }
+  if (!currentUser) rememberEmail(email);
   subBtn.disabled = true;
   try {
     const res = await fetch('/api/subscribe', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email }),
+      method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify({ email }),
     });
     const data = await res.json();
     if (!res.ok) { subResult.textContent = data.error || 'Something went wrong.'; return; }
@@ -236,18 +473,19 @@ subBtn.addEventListener('click', async () => {
 });
 
 demoBtn.addEventListener('click', async () => {
-  const email = document.getElementById('subEmail').value.trim();
-  if (!email) { subResult.textContent = 'Enter your email first (above).'; return; }
-  rememberEmail(email);
+  const email = currentUser?.email || subEmailInput.value.trim();
+  if (!email) { subResult.textContent = 'Enter your email first (above), or create an account on the Dashboard.'; return; }
+  if (!currentUser) rememberEmail(email);
   demoBtn.disabled = true;
   try {
     const res = await fetch('/api/demo/activate', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email }),
+      method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify({ email }),
     });
     const data = await res.json();
     if (!res.ok) { subResult.textContent = data.error || 'Something went wrong.'; return; }
-    subResult.textContent = `Simulated payment successful for ${email}. Go to Insights and check your email there.`;
-    document.getElementById('checkEmail').value = email;
+    subResult.textContent = `Simulated payment successful for ${email}. Go to Insights to see it unlocked.`;
+    checkEmailInput.value = email;
+    if (currentUser) await refreshMe();
   } catch (e) {
     subResult.textContent = 'Network error — try again.';
   } finally {
@@ -263,15 +501,15 @@ const signalsWrap = document.getElementById('signalsWrap');
 const signalsList = document.getElementById('signalsList');
 
 checkBtn.addEventListener('click', async () => {
-  const email = document.getElementById('checkEmail').value.trim();
-  if (!email) { insightsMsg.textContent = 'Enter your email first.'; return; }
-  rememberEmail(email);
+  const email = currentUser?.email || checkEmailInput.value.trim();
+  if (!email) { insightsMsg.textContent = 'Enter your email first, or log in from the Dashboard.'; return; }
+  if (!currentUser) rememberEmail(email);
   checkBtn.disabled = true;
   lockedBox.style.display = 'none';
   signalsWrap.style.display = 'none';
   insightsMsg.textContent = 'Loading…';
   try {
-    const res = await fetch(`/api/insights?email=${encodeURIComponent(email)}`);
+    const res = await fetch(`/api/insights?email=${encodeURIComponent(email)}`, { headers: authHeaders() });
     const data = await res.json();
     if (res.status === 402) {
       insightsMsg.textContent = '';
@@ -307,19 +545,6 @@ checkBtn.addEventListener('click', async () => {
   }
 });
 
-// ---------- Account ----------
-document.getElementById('acctBtn').addEventListener('click', async () => {
-  const email = document.getElementById('acctEmail').value.trim();
-  const out = document.getElementById('acctResult');
-  if (!email) { out.textContent = 'Enter your email first.'; return; }
-  rememberEmail(email);
-  out.textContent = 'Checking…';
-  try {
-    const res = await fetch(`/api/insights?email=${encodeURIComponent(email)}`);
-    if (res.status === 402) { out.innerHTML = 'No active subscription for this email. <a href="#/pricing">See pricing →</a>'; return; }
-    const data = await res.json();
-    out.textContent = `Active — expires ${new Date(data.expiresAt).toLocaleDateString()}.`;
-  } catch (e) {
-    out.textContent = 'Network error — try again.';
-  }
-});
+// Now that every element referenced by updateAuthUI() is declared, resolve
+// the current session (if any) and paint the logged-in/out state.
+refreshMe();

@@ -8,12 +8,23 @@
 const HISTORY_LIMIT = 600;
 
 function createMemoryStorage() {
-  const subscribers = new Map(); // email -> { email, status, expires_at, created_at }
+  const subscribers = new Map(); // email -> { email, status, expires_at, created_at, password_hash }
   const history = new Map(); // instrument -> [{ price, polled_at }] most-recent-first
+  const sessions = new Map(); // token -> email
 
   return {
     mode: 'memory',
     async init() {},
+
+    async setPassword(email, passwordHash) {
+      const existing = subscribers.get(email);
+      if (existing) existing.password_hash = passwordHash;
+      else subscribers.set(email, { email, status: 'pending', expires_at: null, created_at: new Date().toISOString(), password_hash: passwordHash });
+    },
+
+    async createSession(token, email) { sessions.set(token, email); },
+    async getSessionEmail(token) { return sessions.get(token) || null; },
+    async deleteSession(token) { sessions.delete(token); },
 
     async addPollBatch(rows) {
       const now = new Date().toISOString();
@@ -41,11 +52,13 @@ function createMemoryStorage() {
 
     async activate(email, days) {
       const expires = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
+      const existing = subscribers.get(email);
       subscribers.set(email, {
+        ...existing,
         email,
         status: 'active',
         expires_at: expires,
-        created_at: subscribers.get(email)?.created_at || new Date().toISOString(),
+        created_at: existing?.created_at || new Date().toISOString(),
       });
     },
 
@@ -70,9 +83,13 @@ function createPgStorage(pool) {
           status TEXT NOT NULL DEFAULT 'pending',
           expires_at TIMESTAMPTZ,
           created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-          updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+          password_hash TEXT
         );
       `);
+      // Safe no-op if the column already exists — lets an existing deployed
+      // DB pick up account support without a manual migration.
+      await pool.query(`ALTER TABLE subscribers ADD COLUMN IF NOT EXISTS password_hash TEXT;`);
       await pool.query(`
         CREATE TABLE IF NOT EXISTS price_history (
           id SERIAL PRIMARY KEY,
@@ -82,6 +99,32 @@ function createPgStorage(pool) {
         );
       `);
       await pool.query(`CREATE INDEX IF NOT EXISTS idx_price_history_inst_time ON price_history (instrument, polled_at DESC);`);
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS sessions (
+          token TEXT PRIMARY KEY,
+          email TEXT NOT NULL,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+      `);
+    },
+
+    async setPassword(email, passwordHash) {
+      await pool.query(
+        `INSERT INTO subscribers (email, status, password_hash) VALUES ($1, 'pending', $2)
+         ON CONFLICT (email) DO UPDATE SET password_hash = $2, updated_at = now()`,
+        [email, passwordHash]
+      );
+    },
+
+    async createSession(token, email) {
+      await pool.query(`INSERT INTO sessions (token, email) VALUES ($1, $2)`, [token, email]);
+    },
+    async getSessionEmail(token) {
+      const { rows } = await pool.query(`SELECT email FROM sessions WHERE token = $1`, [token]);
+      return rows[0]?.email || null;
+    },
+    async deleteSession(token) {
+      await pool.query(`DELETE FROM sessions WHERE token = $1`, [token]);
     },
 
     async addPollBatch(rows) {

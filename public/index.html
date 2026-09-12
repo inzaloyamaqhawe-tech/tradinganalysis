@@ -21,6 +21,7 @@
       <button class="mainnav-item" data-view="account">My Account</button>
     </nav>
     <div class="topbar-cta">
+      <span class="status-pill" id="authPill" style="display:none;"></span>
       <span class="status-pill" id="demoPill" style="display:none;">DEMO MODE</span>
     </div>
   </div>
@@ -33,15 +34,39 @@
 
   <!-- DASHBOARD -->
   <section class="view active" data-view="dashboard">
-    <div class="hero">
-      <div>
-        <h1>Live Market Dashboard</h1>
-        <p>10 major crypto pairs plus GBP/USD and Gold, tracked around the clock. Free to watch — upgrade for buy/sell insights.</p>
+    <div class="hero-banner">
+      <div class="hero-copy">
+        <div class="eyebrow">Regime-aware · multi-strategy · ATR-scaled</div>
+        <h1>Trade signals built for accuracy, not hype.</h1>
+        <p>We classify each market's regime — trending, ranging, breaking out, or quiet — and only fire the strategy built for that condition, instead of one generic rule for every market. Every non-HOLD signal ships with a full Entry / TP1-TP4 / stop-loss ladder at a disciplined 1:2 risk:reward, sized to that asset's own volatility.</p>
+        <div class="hero-stats">
+          <div class="stat-chip"><div class="n">12</div><div class="l">Markets tracked</div></div>
+          <div class="stat-chip"><div class="n" id="statUp">–</div><div class="l">Up right now</div></div>
+          <div class="stat-chip"><div class="n">4</div><div class="l">Regime-matched strategies</div></div>
+        </div>
+        <p class="hero-disclaimer">Informational only, not financial advice — trading carries risk.</p>
       </div>
-      <div class="hero-stats">
-        <div class="stat-chip"><div class="n">12</div><div class="l">Markets tracked</div></div>
-        <div class="stat-chip"><div class="n" id="statUp">–</div><div class="l">Up right now</div></div>
-        <div class="stat-chip"><div class="n">10m</div><div class="l">Poll interval</div></div>
+
+      <div class="panel hero-auth" id="heroAuth">
+        <div class="auth-tabs">
+          <button class="auth-tab active" data-mode="signup">Create free account</button>
+          <button class="auth-tab" data-mode="login">Log in</button>
+        </div>
+        <div id="authLoggedOut">
+          <p class="note" style="margin-top:0;">One account, everywhere — no more retyping your email for pricing, insights or charts.</p>
+          <div class="row"><input type="email" id="authEmail" placeholder="you@example.com" /></div>
+          <div class="row" style="margin-top:8px;"><input type="password" id="authPassword" placeholder="Password (min 6 characters)" /></div>
+          <div class="row" style="margin-top:10px;"><button id="authSubmitBtn">Create free account</button></div>
+          <div id="authMsg" class="note"></div>
+        </div>
+        <div id="authLoggedIn" style="display:none;">
+          <p>Signed in as <strong id="authWhoEmail"></strong></p>
+          <p class="note" id="authStatusNote"></p>
+          <div class="row">
+            <button class="secondary" id="goInsightsFromHero">View Insights</button>
+            <button class="ghost" id="logoutBtn">Log out</button>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -105,13 +130,19 @@
   <!-- ACCOUNT -->
   <section class="view" data-view="account">
     <h1>My Account</h1>
-    <p class="section-sub">Look up your subscription status.</p>
-    <div class="panel" style="max-width:480px;">
-      <div class="row">
-        <input type="email" id="acctEmail" placeholder="you@example.com" />
-        <button id="acctBtn">Check status</button>
+    <p class="section-sub">Your subscription status.</p>
+    <div class="panel" style="max-width:480px;" id="acctLoggedInBox">
+      <div class="sp-row"><span>Email</span><b id="acctEmailShown">—</b></div>
+      <div class="sp-row"><span>Status</span><b id="acctStatus">—</b></div>
+      <div class="sp-row"><span>Expires</span><b id="acctExpires">—</b></div>
+      <div class="row" style="margin-top:14px;">
+        <button class="secondary" id="acctPricingBtn">Go to Pricing</button>
+        <button class="ghost" id="acctLogoutBtn">Log out</button>
       </div>
-      <div id="acctResult" class="note"></div>
+    </div>
+    <div class="panel" style="max-width:480px;" id="acctLoggedOutBox">
+      <p>You're not logged in.</p>
+      <button id="acctGoHeroBtn">Create an account / log in →</button>
     </div>
   </section>
 </main>
@@ -132,15 +163,57 @@
       </div>
       <button class="ghost" id="chartClose">✕ Close</button>
     </div>
-    <div class="chart-wrap">
-      <canvas id="chartCanvas"></canvas>
-      <canvas id="drawCanvas"></canvas>
+
+    <div class="symbol-ribbon" id="symbolRibbon"></div>
+
+    <div class="chart-toolbar">
+      <div class="tool-group">
+        <button class="tool-btn active" id="typeLine" data-type="line">Line</button>
+        <button class="tool-btn" id="typeCandles" data-type="candles">Candles</button>
+      </div>
+      <div class="tool-group" id="indicatorGroup">
+        <label class="tool-check"><input type="checkbox" id="toggleEma8" checked /> EMA8</label>
+        <label class="tool-check"><input type="checkbox" id="toggleEma21" checked /> EMA21</label>
+      </div>
+      <div class="tool-group" id="drawToolGroup">
+        <button class="tool-btn" data-tool="trendline" title="Trendline">📏 Line</button>
+        <button class="tool-btn" data-tool="hline" title="Horizontal line">➖ H-Line</button>
+        <button class="tool-btn" data-tool="rect" title="Rectangle">⬜ Rect</button>
+        <button class="tool-btn" data-tool="fib" title="Fibonacci retracement — drag from swing high to swing low">🌀 Fib</button>
+        <button class="tool-btn" data-tool="position" title="Long/Short position — drag up for Long, down for Short">🎯 Long/Short</button>
+        <button class="tool-btn" id="clearDrawBtn" title="Clear all drawings">🗑️ Clear</button>
+      </div>
     </div>
-    <div class="chart-tools" id="chartTools">
-      <span class="note" id="chartLegend"></span>
+
+    <div class="chart-main">
+      <div class="chart-col">
+        <div class="chart-wrap">
+          <canvas id="chartCanvas"></canvas>
+          <canvas id="drawCanvas"></canvas>
+        </div>
+        <div class="chart-tools" id="chartTools">
+          <span class="note" id="chartLegend"></span>
+        </div>
+      </div>
+
+      <aside class="side-panel" id="sidePanel">
+        <div class="sp-row"><span>Price</span><b id="spPrice">—</b></div>
+        <div class="sp-row"><span>Signal</span><b id="spSignal">—</b></div>
+        <div class="sp-row"><span>Regime</span><b id="spRegime">—</b></div>
+        <div class="sp-divider"></div>
+        <div class="sp-title">Suggested trade <span class="sp-hint">(informational)</span></div>
+        <div class="sp-row"><span>Entry</span><b id="spEntry">—</b></div>
+        <div class="sp-row good"><span>TP1</span><b id="spTp1">—</b></div>
+        <div class="sp-row good"><span>TP2</span><b id="spTp2">—</b></div>
+        <div class="sp-row good"><span>TP3</span><b id="spTp3">—</b></div>
+        <div class="sp-row good"><span>TP4 (1:2)</span><b id="spTp4">—</b></div>
+        <div class="sp-row bad"><span>Stop loss</span><b id="spSl">—</b></div>
+        <div id="spLockedNote" class="note" style="display:none;">🔒 Subscribe to see the suggested entry, TP1-4 and stop loss for this market. <a href="#/pricing" id="chartPricingLink">See pricing →</a></div>
+      </aside>
     </div>
+
     <div id="chartLockedNote" class="note" style="display:none;">
-      🔒 Subscribe to overlay EMA indicators and sketch your own trendlines for comparison. <a href="#/pricing" id="chartPricingLink">See pricing →</a>
+      🔒 Subscribe to overlay EMA indicators and use the drawing tools (trendline, rectangle, Fibonacci, Long/Short).
     </div>
   </div>
 </div>
