@@ -2,7 +2,10 @@
 // falls back to a simple in-memory store so the app can run in "demo mode"
 // with zero setup (no DB, no real payments).
 
-const HISTORY_LIMIT = 20;
+// Kept generous so the multi-strategy engine (signals.js) has enough raw
+// samples to bucket into synthetic candles for instruments without a real
+// candle feed (FX/gold). At a 10-minute poll interval, 600 samples ≈ 4 days.
+const HISTORY_LIMIT = 600;
 
 function createMemoryStorage() {
   const subscribers = new Map(); // email -> { email, status, expires_at, created_at }

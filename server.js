@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const { createMemoryStorage, createPgStorage } = require('./storage');
+const { runEngine, buildSyntheticCandles } = require('./signals');
 
 const app = express();
 app.use(cors());
@@ -35,7 +36,7 @@ const CRYPTO_INSTRUMENTS = [
   { key: 'AVAX_USDT', label: 'AVAX/USDT' },
   { key: 'LINK_USDT', label: 'LINK/USDT' },
   { key: 'DOT_USDT', label: 'DOT/USDT' },
-  { key: 'TON_USDT', label: 'TON/USDT' },
+  { key: 'LTC_USDT', label: 'LTC/USDT' },
 ];
 const FX_INSTRUMENTS = [
   { key: 'GBPUSD', label: 'GBP/USD' },
@@ -46,6 +47,9 @@ const LABELS = Object.fromEntries([...CRYPTO_INSTRUMENTS, ...FX_INSTRUMENTS].map
 
 // In-memory cache of latest prices (fast reads for /api/prices)
 let latestCache = {}; // key -> { price, changePct, updatedAt }
+// In-memory cache of real crypto candles (chronological, oldest first) for
+// the signal engine — refreshed on every poll cycle, not per-request.
+let cryptoCandleCache = {}; // key -> [{open,high,low,close}]
 
 // ---- Pollers ----
 async function pollCrypto() {
@@ -63,6 +67,21 @@ async function pollCrypto() {
     rows.push({ instrument: t.i, price });
   }
   return rows;
+}
+
+async function pollCryptoCandles() {
+  for (const { key } of CRYPTO_INSTRUMENTS) {
+    try {
+      const res = await fetch(`https://api.crypto.com/exchange/v1/public/get-candlestick?instrument_name=${key}&timeframe=1h&count=100`);
+      const json = await res.json();
+      const data = json?.result?.data || [];
+      cryptoCandleCache[key] = data.map(c => ({
+        open: parseFloat(c.o), high: parseFloat(c.h), low: parseFloat(c.l), close: parseFloat(c.c),
+      }));
+    } catch (e) {
+      console.error(`candlestick poll failed for ${key}`, e.message);
+    }
+  }
 }
 
 async function pollForex() {
@@ -100,29 +119,30 @@ async function pollAllAndStore() {
     const fxRows = await pollForex();
     const rows = [...cryptoRows, ...fxRows];
     await store.addPollBatch(rows);
-    console.log(`[poll] stored ${rows.length} price points @ ${new Date().toISOString()}`);
+    await pollCryptoCandles();
+    console.log(`[poll] stored ${rows.length} price points + refreshed crypto candles @ ${new Date().toISOString()}`);
   } catch (e) {
     console.error('poll failed', e);
   }
 }
 
-// Simple SMA-crossover signal from our own stored history.
+const CRYPTO_KEYS = new Set(CRYPTO_INSTRUMENTS.map(c => c.key));
+
+// Multi-strategy engine (signals.js, ported from BOTS/universal.py):
+// - Crypto gets real 1h candles straight from the exchange.
+// - FX/gold don't have a free real-time candle feed, so we bucket our own
+//   10-minute price polls into synthetic hourly candles instead. Same engine
+//   either way, just a lower-fidelity input for FX/gold until more history
+//   builds up.
 async function computeSignal(instrument) {
-  const prices = await store.getHistory(instrument, 20);
-  if (prices.length < 8) {
-    return { signal: 'HOLD', note: 'Gathering data — check back in a few hours for a confident signal.' };
+  let candles;
+  if (CRYPTO_KEYS.has(instrument)) {
+    candles = cryptoCandleCache[instrument] || [];
+  } else {
+    const recentFirst = await store.getHistory(instrument, 600);
+    candles = buildSyntheticCandles(recentFirst.slice().reverse(), 6);
   }
-  const sma = (arr) => arr.reduce((a, b) => a + b, 0) / arr.length;
-  const short = sma(prices.slice(0, Math.min(5, prices.length)));
-  const long = sma(prices);
-  const diffPct = ((short - long) / long) * 100;
-  let signal = 'HOLD';
-  if (diffPct > 0.15) signal = 'BUY';
-  else if (diffPct < -0.15) signal = 'SELL';
-  return {
-    signal,
-    note: `Short-term avg is ${diffPct >= 0 ? 'above' : 'below'} the recent trend by ${Math.abs(diffPct).toFixed(2)}% (based on our own tracked price history, not financial advice).`,
-  };
+  return runEngine(candles);
 }
 
 // ---- Routes ----

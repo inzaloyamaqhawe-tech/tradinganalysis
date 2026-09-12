@@ -4,39 +4,58 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>TradingAnalysis Admin</title>
+<link rel="stylesheet" href="css/styles.css" />
 <style>
-  body { margin:0; background:#0b0f14; color:#e8edf5; font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif; padding:24px; }
-  .wrap { max-width: 760px; margin: 0 auto; }
-  h1 { font-size:1.3rem; }
-  input, button { padding:10px 12px; border-radius:8px; border:1px solid #232c3a; background:#0e141c; color:#e8edf5; font-size:.9rem; }
-  button { background:#4f8cff; border:none; font-weight:600; cursor:pointer; }
-  button.danger { background:#ff5c6c; }
-  table { width:100%; border-collapse: collapse; margin-top:16px; }
-  th, td { text-align:left; padding:8px 6px; border-bottom:1px solid #232c3a; font-size:.85rem; }
-  .status-active { color:#33d17a; font-weight:600; }
-  .status-pending { color:#ffb84f; font-weight:600; }
-  .status-inactive { color:#8a96a8; }
-  .row { display:flex; gap:8px; margin-top:8px; flex-wrap:wrap; }
-  .top { display:flex; gap:8px; align-items:center; margin-bottom:16px; }
+  table { width: 100%; border-collapse: collapse; margin-top: 16px; }
+  th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid var(--border); font-size: .87rem; }
+  th { color: var(--muted); font-weight: 600; font-size: .78rem; text-transform: uppercase; letter-spacing: .04em; }
+  .status-active { color: var(--up); font-weight: 700; }
+  .status-pending { color: var(--gold); font-weight: 700; }
+  .status-inactive { color: var(--muted); }
+  button.danger { background: linear-gradient(135deg, #ff5d6c, #c23345); }
 </style>
 </head>
 <body>
-<div class="wrap">
-  <h1>🔑 TradingAnalysis — Admin</h1>
-  <div class="top">
-    <input type="password" id="adminKey" placeholder="Admin key" style="flex:1;" />
-    <button id="loadBtn">Load subscribers</button>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="index.html">
+      <span class="brand-mark">📈</span>
+      <span class="brand-name">Trading<b>Analysis</b></span>
+    </a>
+    <nav class="mainnav">
+      <a class="mainnav-item" href="index.html" style="display:flex; align-items:center;">← Back to site</a>
+    </nav>
+    <div class="topbar-cta"><span class="status-pill">ADMIN</span></div>
   </div>
-  <div class="row">
-    <input type="email" id="quickEmail" placeholder="email to activate" style="flex:1;" />
-    <input type="number" id="quickDays" placeholder="days" value="30" style="width:80px;" />
-    <button id="activateBtn">Activate</button>
+</header>
+
+<main class="shell">
+  <h1>Subscribers</h1>
+  <p class="section-sub">Activate a subscriber after you've confirmed their PayPal payment.</p>
+
+  <div class="panel">
+    <div class="row">
+      <input type="password" id="adminKey" placeholder="Admin key" />
+      <button id="loadBtn">Load subscribers</button>
+    </div>
+    <div class="row" style="margin-top:14px; border-top:1px solid var(--border); padding-top:14px;">
+      <input type="email" id="quickEmail" placeholder="email to activate" />
+      <input type="number" id="quickDays" placeholder="days" value="30" style="max-width:100px; min-width:100px;" />
+      <button id="activateBtn">Activate</button>
+    </div>
   </div>
-  <table>
-    <thead><tr><th>Email</th><th>Status</th><th>Expires</th><th>Action</th></tr></thead>
-    <tbody id="rows"></tbody>
-  </table>
-</div>
+
+  <div class="panel">
+    <table>
+      <thead><tr><th>Email</th><th>Status</th><th>Expires</th><th>Action</th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+</main>
+
+<footer class="footer"><div class="footer-inner"><div><strong>TradingAnalysis</strong> Admin</div></div></footer>
+
 <script>
   const keyInput = document.getElementById('adminKey');
   keyInput.value = localStorage.getItem('ta_admin_key') || '';
@@ -44,10 +63,7 @@
   async function api(path, opts = {}) {
     const key = keyInput.value.trim();
     localStorage.setItem('ta_admin_key', key);
-    const res = await fetch(path, {
-      ...opts,
-      headers: { 'Content-Type': 'application/json', 'x-admin-key': key, ...(opts.headers || {}) },
-    });
+    const res = await fetch(path, { ...opts, headers: { 'Content-Type': 'application/json', 'x-admin-key': key, ...(opts.headers || {}) } });
     return res.json();
   }
 
@@ -70,14 +86,8 @@
     document.querySelectorAll('.deact').forEach(b => b.addEventListener('click', () => deactivate(b.dataset.email)));
   }
 
-  async function activate(email, days) {
-    await api('/api/admin/activate', { method: 'POST', body: JSON.stringify({ email, days }) });
-    load();
-  }
-  async function deactivate(email) {
-    await api('/api/admin/deactivate', { method: 'POST', body: JSON.stringify({ email }) });
-    load();
-  }
+  async function activate(email, days) { await api('/api/admin/activate', { method: 'POST', body: JSON.stringify({ email, days }) }); load(); }
+  async function deactivate(email) { await api('/api/admin/deactivate', { method: 'POST', body: JSON.stringify({ email }) }); load(); }
 
   document.getElementById('loadBtn').addEventListener('click', load);
   document.getElementById('activateBtn').addEventListener('click', () => {

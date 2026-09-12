@@ -4,83 +4,125 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>TradingAnalysis — Live Market Signals</title>
-<style>
-  :root {
-    --bg: #0b0f14; --panel: #121821; --panel2: #171f2b; --border: #232c3a;
-    --text: #e8edf5; --muted: #8a96a8; --up: #33d17a; --down: #ff5c6c;
-    --accent: #4f8cff; --accent2: #ffb84f;
-  }
-  * { box-sizing: border-box; }
-  body { margin:0; background: var(--bg); color: var(--text); font-family: -apple-system, Segoe UI, Roboto, Arial, sans-serif; padding: 0 16px 48px; }
-  header { max-width: 980px; margin: 0 auto; padding: 32px 0 12px; }
-  h1 { font-size: 1.6rem; margin: 0 0 4px; }
-  .sub { color: var(--muted); font-size: .95rem; }
-  .wrap { max-width: 980px; margin: 0 auto; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; margin: 20px 0; }
-  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; }
-  .card .label { color: var(--muted); font-size: .8rem; text-transform: uppercase; letter-spacing: .04em; }
-  .card .price { font-size: 1.3rem; font-weight: 600; margin-top: 4px; }
-  .card .chg { font-size: .85rem; margin-top: 2px; }
-  .up { color: var(--up); } .down { color: var(--down); } .flat { color: var(--muted); }
-  .panel { background: var(--panel2); border: 1px solid var(--border); border-radius: 14px; padding: 22px; margin: 28px 0; }
-  .panel h2 { margin-top: 0; font-size: 1.15rem; }
-  .row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
-  input[type=email] { flex: 1; min-width: 220px; padding: 11px 14px; border-radius: 8px; border: 1px solid var(--border); background: #0e141c; color: var(--text); font-size: .95rem; }
-  button { padding: 11px 18px; border-radius: 8px; border: none; background: var(--accent); color: white; font-weight: 600; cursor: pointer; font-size: .95rem; }
-  button.secondary { background: transparent; border: 1px solid var(--border); color: var(--text); }
-  button:hover { filter: brightness(1.08); }
-  .note { color: var(--muted); font-size: .85rem; margin-top: 10px; line-height: 1.5; }
-  .signal-row { display:flex; justify-content: space-between; align-items:center; padding: 10px 0; border-bottom: 1px solid var(--border); gap: 12px; }
-  .signal-row:last-child { border-bottom: none; }
-  .badge { padding: 4px 10px; border-radius: 999px; font-size: .78rem; font-weight: 700; letter-spacing:.03em; }
-  .badge.BUY { background: rgba(51,209,122,.15); color: var(--up); }
-  .badge.SELL { background: rgba(255,92,108,.15); color: var(--down); }
-  .badge.HOLD { background: rgba(138,150,168,.15); color: var(--muted); }
-  .sig-note { color: var(--muted); font-size: .82rem; max-width: 480px; text-align: right; }
-  .disclaimer { color: var(--muted); font-size: .78rem; margin-top: 18px; border-top: 1px solid var(--border); padding-top: 14px; }
-  a { color: var(--accent); }
-  .price-tag { color: var(--accent2); font-weight: 700; }
-</style>
+<link rel="stylesheet" href="css/styles.css" />
 </head>
 <body>
-<header>
-  <h1>📈 TradingAnalysis</h1>
-  <div class="sub">Live prices for 10 major crypto pairs + GBP/USD + Gold. Free to watch. Paid insights tell you when we'd lean buy or sell.</div>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="#/dashboard">
+      <span class="brand-mark">📈</span>
+      <span class="brand-name">Trading<b>Analysis</b></span>
+    </a>
+    <nav class="mainnav" id="mainnav">
+      <button class="mainnav-item" data-view="dashboard">Dashboard</button>
+      <button class="mainnav-item" data-view="insights">Insights <span class="lock">🔒</span></button>
+      <button class="mainnav-item" data-view="pricing">Pricing</button>
+      <button class="mainnav-item" data-view="account">My Account</button>
+    </nav>
+    <div class="topbar-cta">
+      <span class="status-pill" id="demoPill" style="display:none;">DEMO MODE</span>
+    </div>
+  </div>
 </header>
 
-<div class="wrap">
-  <div id="demoBanner" style="display:none; background:#3a2f10; border:1px solid #5c4a12; color:#ffb84f; padding:10px 16px; border-radius:10px; margin:16px 0; font-size:.85rem;">
-    🧪 <strong>Demo mode</strong> — no real money moves and nothing is saved permanently. Use "Simulate Payment" below to test the subscriber experience.
+<main class="shell">
+  <div class="demo-banner" id="demoBanner" style="display:none;">
+    🧪 <strong>Demo mode</strong> — nothing here charges real money or persists permanently. Use Pricing → Simulate Payment to test the subscriber experience end to end.
   </div>
 
-  <div class="grid" id="priceGrid"></div>
-
-  <div class="panel">
-    <h2>🔓 Unlock Buy/Sell Insights — <span class="price-tag" id="priceLabel">R45/month</span></h2>
-    <p class="sub">Get a simple BUY / SELL / HOLD read on all 12 tracked markets, based on our own tracked price trend (not financial advice — for information only).</p>
-    <div class="row">
-      <input type="email" id="subEmail" placeholder="you@example.com" />
-      <button id="subBtn">Get Access</button>
-      <button class="secondary" id="demoBtn" style="display:none;">🧪 Simulate Payment</button>
+  <!-- DASHBOARD -->
+  <section class="view active" data-view="dashboard">
+    <div class="hero">
+      <div>
+        <h1>Live Market Dashboard</h1>
+        <p>10 major crypto pairs plus GBP/USD and Gold, tracked around the clock. Free to watch — upgrade for buy/sell insights.</p>
+      </div>
+      <div class="hero-stats">
+        <div class="stat-chip"><div class="n">12</div><div class="l">Markets tracked</div></div>
+        <div class="stat-chip"><div class="n" id="statUp">–</div><div class="l">Up right now</div></div>
+        <div class="stat-chip"><div class="n">10m</div><div class="l">Poll interval</div></div>
+      </div>
     </div>
-    <div class="row" style="margin-top:18px; border-top:1px solid var(--border); padding-top:16px;">
-      <input type="email" id="checkEmail" placeholder="Already subscribed? Enter your email" />
-      <button class="secondary" id="checkBtn">View My Insights</button>
+
+    <h2 class="section-title">All markets</h2>
+    <p class="section-sub">Prices refresh in your browser every 30 seconds.</p>
+    <div class="grid" id="priceGrid"></div>
+  </section>
+
+  <!-- INSIGHTS -->
+  <section class="view" data-view="insights">
+    <h1>Premium Insights</h1>
+    <p class="section-sub">A multi-strategy signal engine reads market regime (trending, ranging, breakout, quiet) and applies the matching strategy — the same approach behind our live trading bot, adapted here as read-only insight.</p>
+
+    <div class="panel">
+      <div class="row" style="margin-bottom:4px;">
+        <input type="email" id="checkEmail" placeholder="Enter your subscriber email" />
+        <button id="checkBtn">View My Insights</button>
+      </div>
+      <div id="insightsMsg" class="note"></div>
+
+      <div id="lockedBox" class="locked-box" style="display:none;">
+        <div class="icon">🔒</div>
+        <p>Subscribe to unlock live BUY / SELL / HOLD signals for all 12 tracked markets.</p>
+        <button id="goPricingBtn">See Pricing — <span id="lockedPrice">R45/month</span></button>
+      </div>
+
+      <div id="signalsWrap" style="display:none;">
+        <div id="signalsList"></div>
+      </div>
     </div>
-    <div id="subResult" class="note"></div>
-  </div>
 
-  <div class="panel" id="insightsPanel" style="display:none;">
-    <h2>Today's Signals</h2>
-    <div id="signalsList"></div>
-  </div>
+    <div class="disclaimer">
+      Signals come from an automated regime + strategy-selection engine (ATR-based volatility read, EMA trend, candle-range/trend/breakout/mean-reversion strategies). Crypto uses real exchange candles; GBP/USD and Gold use our own tracked price history until more data builds up. This is informational only, not financial advice — trading carries risk.
+    </div>
+  </section>
 
-  <div class="disclaimer">
-    Prices are pulled live from public market data sources (crypto via Crypto.com's public exchange API; GBP/USD and gold from public FX/metals feeds) and refresh periodically.
-    Signals are a simple automated trend read from our own tracked history — they are informational only and not financial advice. Trading carries risk; never invest more than you can afford to lose.
-  </div>
-</div>
+  <!-- PRICING -->
+  <section class="view" data-view="pricing">
+    <h1>Pricing</h1>
+    <p class="section-sub">One plan. Cancel anytime.</p>
 
-<script src="app.js"></script>
+    <div class="plan-card">
+      <div class="label" style="color:var(--gold); font-weight:700; letter-spacing:.05em; font-size:.8rem;">PREMIUM INSIGHTS</div>
+      <div class="plan-price" id="planPrice">R45 <span>/ month</span></div>
+      <ul class="plan-list">
+        <li>Live BUY / SELL / HOLD signal on all 12 markets</li>
+        <li>Regime + strategy detail behind every signal</li>
+        <li>Free live prices for everyone, always</li>
+      </ul>
+      <div class="row">
+        <input type="email" id="subEmail" placeholder="you@example.com" />
+      </div>
+      <div class="row" style="margin-top:10px;">
+        <button id="subBtn">Get Access</button>
+        <button class="secondary" id="demoBtn" style="display:none;">🧪 Simulate Payment</button>
+      </div>
+      <div id="subResult" class="note"></div>
+    </div>
+  </section>
+
+  <!-- ACCOUNT -->
+  <section class="view" data-view="account">
+    <h1>My Account</h1>
+    <p class="section-sub">Look up your subscription status.</p>
+    <div class="panel" style="max-width:480px;">
+      <div class="row">
+        <input type="email" id="acctEmail" placeholder="you@example.com" />
+        <button id="acctBtn">Check status</button>
+      </div>
+      <div id="acctResult" class="note"></div>
+    </div>
+  </section>
+</main>
+
+<footer class="footer">
+  <div class="footer-inner">
+    <div><strong>TradingAnalysis</strong> — by IY Technologies</div>
+    <div>Questions? Reach us via PayPal.me/IYTechnologies for now.</div>
+  </div>
+</footer>
+
+<script src="js/app.js"></script>
 </body>
 </html>
