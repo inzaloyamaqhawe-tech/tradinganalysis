@@ -118,10 +118,32 @@
 
 <footer class="footer">
   <div class="footer-inner">
-    <div><strong>TradingAnalysis</strong> — by IY Technologies</div>
+    <div>POWERED BY: <a href="https://iytechnologies.co.za" target="_blank" rel="noopener"><strong>Inzalo Yamaqhawe Technologies</strong></a></div>
     <div>Questions? Reach us via PayPal.me/IYTechnologies for now.</div>
   </div>
 </footer>
+
+<div class="modal-overlay" id="chartModal">
+  <div class="modal-box">
+    <div class="modal-head">
+      <div>
+        <div class="modal-title" id="chartTitle">—</div>
+        <div class="modal-sub" id="chartSub"></div>
+      </div>
+      <button class="ghost" id="chartClose">✕ Close</button>
+    </div>
+    <div class="chart-wrap">
+      <canvas id="chartCanvas"></canvas>
+      <canvas id="drawCanvas"></canvas>
+    </div>
+    <div class="chart-tools" id="chartTools">
+      <span class="note" id="chartLegend"></span>
+    </div>
+    <div id="chartLockedNote" class="note" style="display:none;">
+      🔒 Subscribe to overlay EMA indicators and sketch your own trendlines for comparison. <a href="#/pricing" id="chartPricingLink">See pricing →</a>
+    </div>
+  </div>
+</div>
 
 <script src="js/app.js"></script>
 </body>

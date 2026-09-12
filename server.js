@@ -1,7 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const { createMemoryStorage, createPgStorage } = require('./storage');
-const { runEngine, buildSyntheticCandles } = require('./signals');
+const { runEngine, buildSyntheticCandles, emaSeries, EMA_FAST_PERIOD, EMA_SLOW_PERIOD } = require('./signals');
 
 const app = express();
 app.use(cors());
@@ -128,20 +128,20 @@ async function pollAllAndStore() {
 
 const CRYPTO_KEYS = new Set(CRYPTO_INSTRUMENTS.map(c => c.key));
 
-// Multi-strategy engine (signals.js, ported from BOTS/universal.py):
-// - Crypto gets real 1h candles straight from the exchange.
-// - FX/gold don't have a free real-time candle feed, so we bucket our own
-//   10-minute price polls into synthetic hourly candles instead. Same engine
-//   either way, just a lower-fidelity input for FX/gold until more history
-//   builds up.
-async function computeSignal(instrument) {
-  let candles;
+// Shared candle retrieval — crypto gets real 1h candles straight from the
+// exchange; FX/gold don't have a free real-time candle feed, so we bucket
+// our own 10-minute price polls into synthetic hourly candles instead.
+async function getCandlesFor(instrument) {
   if (CRYPTO_KEYS.has(instrument)) {
-    candles = cryptoCandleCache[instrument] || [];
-  } else {
-    const recentFirst = await store.getHistory(instrument, 600);
-    candles = buildSyntheticCandles(recentFirst.slice().reverse(), 6);
+    return cryptoCandleCache[instrument] || [];
   }
+  const recentFirst = await store.getHistory(instrument, 600);
+  return buildSyntheticCandles(recentFirst.slice().reverse(), 6);
+}
+
+// Multi-strategy engine (signals.js, ported from BOTS/universal.py).
+async function computeSignal(instrument) {
+  const candles = await getCandlesFor(instrument);
   return runEngine(candles);
 }
 
@@ -212,6 +212,39 @@ app.get('/api/insights', async (req, res) => {
     signals.push({ key, label: LABELS[key], ...s });
   }
   res.json({ locked: false, expiresAt: sub.expires_at, signals });
+});
+
+// Chart data for a single market: closes for everyone; EMA overlays +
+// regime/strategy only for an active subscriber (checked by email).
+app.get('/api/history', async (req, res) => {
+  const key = String(req.query.key || '');
+  if (!ALL_KEYS.includes(key)) return res.status(404).json({ error: 'unknown instrument' });
+
+  const email = String(req.query.email || '').trim().toLowerCase();
+  let premium = false;
+  if (email) {
+    const sub = await store.getSubscriber(email);
+    premium = !!(sub && sub.status === 'active' && sub.expires_at && new Date(sub.expires_at) > new Date());
+  }
+
+  const candles = await getCandlesFor(key);
+  const closes = candles.map(c => c.close);
+  const payload = {
+    key,
+    label: LABELS[key],
+    closes,
+    high: candles.length ? Math.max(...candles.map(c => c.high)) : null,
+    low: candles.length ? Math.min(...candles.map(c => c.low)) : null,
+    premium,
+  };
+
+  if (premium && closes.length) {
+    payload.ema8 = emaSeries(closes, EMA_FAST_PERIOD);
+    payload.ema21 = emaSeries(closes, EMA_SLOW_PERIOD);
+    payload.insight = runEngine(candles);
+  }
+
+  res.json(payload);
 });
 
 // ---- Admin (protected by ADMIN_KEY) ----

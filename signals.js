@@ -155,6 +155,42 @@ const STRATEGY_LABEL = {
   MREV: 'Range mean-reversion',
 };
 
+// SL distance in units of ATR, per strategy — same relative tightness as
+// universal.py's STRATEGY_RISK (CRT/MREV tightest, BRK widest, since a
+// breakout setup needs more room to breathe). Unlike universal.py, TP is not
+// a separate per-strategy multiplier: every setup is standardized to a 1:2
+// risk:reward, laddered as TP1..TP4 so TP4 lands exactly at the 1:2 target
+// (this is the level universal.py would call its single "TP"). Everything
+// stays ATR-relative, so it self-scales per asset instead of using a fixed
+// dollar/pip distance — a $0.07 DOGE move and a $4000 XAU move both get a
+// stop sized to *that instrument's own* recent volatility.
+const STRATEGY_SL_ATR = { CRT: 1.0, TREND: 1.2, BRK: 1.5, MREV: 1.0 };
+const RISK_REWARD_TO_TP4 = 2; // 1 : 2
+
+function decimalsFor(price) {
+  if (price >= 100) return 2;
+  if (price >= 1) return 4;
+  return 6;
+}
+
+function round(price) {
+  const d = decimalsFor(Math.abs(price));
+  return Number(price.toFixed(d));
+}
+
+// Ladders SL and TP1-TP4 off the last close, sized to this strategy's ATR
+// multiple. TP4 is the 1:2 target; TP1-TP3 are evenly spaced checkpoints
+// toward it (0.5R / 1.0R / 1.5R / 2.0R) so a premium user can bank partial
+// profit on the way instead of an all-or-nothing single target.
+function computeLevels(entry, side, atrNow, strategy) {
+  const slMult = STRATEGY_SL_ATR[strategy] ?? 1.0;
+  const slDist = slMult * atrNow;
+  const dir = side === 'BUY' ? 1 : -1;
+  const rMultiples = [0.5, 1.0, 1.5, RISK_REWARD_TO_TP4];
+  const [tp1, tp2, tp3, tp4] = rMultiples.map(r => round(entry + dir * r * slDist));
+  return { entry: round(entry), sl: round(entry - dir * slDist), tp1, tp2, tp3, tp4, riskReward: `1:${RISK_REWARD_TO_TP4}` };
+}
+
 // Runs the full engine on a chronological array of {open,high,low,close}
 // candles and returns a display-ready result.
 function runEngine(closed) {
@@ -171,11 +207,13 @@ function runEngine(closed) {
       note: `Regime: ${regime.replace('_', ' ').toLowerCase()} — no high-conviction setup right now. Informational only, not financial advice.`,
     };
   }
+  const levels = computeLevels(closed.at(-1).close, signal.side, atrNow, strategy);
   return {
     signal: signal.side,
     regime,
     strategy,
-    note: `${STRATEGY_LABEL[strategy]} in a ${regime.replace('_', ' ').toLowerCase()} regime (ATR ${atrNow.toFixed(4)}). Informational only, not financial advice.`,
+    levels,
+    note: `${STRATEGY_LABEL[strategy]} in a ${regime.replace('_', ' ').toLowerCase()} regime (ATR ${atrNow.toFixed(4)}), risk:reward ${levels.riskReward} to TP4. Informational only, not financial advice — not a trade instruction.`,
   };
 }
 
@@ -197,4 +235,4 @@ function buildSyntheticCandles(pricesChronological, bucketSize = 6) {
   return candles;
 }
 
-module.exports = { runEngine, buildSyntheticCandles };
+module.exports = { runEngine, buildSyntheticCandles, emaSeries, EMA_FAST_PERIOD, EMA_SLOW_PERIOD };
