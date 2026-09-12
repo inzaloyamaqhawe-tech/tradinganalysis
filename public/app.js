@@ -1,10 +1,19 @@
 const priceGrid = document.getElementById('priceGrid');
 const priceLabel = document.getElementById('priceLabel');
 const subBtn = document.getElementById('subBtn');
+const demoBtn = document.getElementById('demoBtn');
+const demoBanner = document.getElementById('demoBanner');
 const checkBtn = document.getElementById('checkBtn');
 const subResult = document.getElementById('subResult');
 const insightsPanel = document.getElementById('insightsPanel');
 const signalsList = document.getElementById('signalsList');
+let isDemo = false;
+
+fetch('/api/config').then(r => r.json()).then(cfg => {
+  isDemo = !!cfg.demoMode;
+  demoBanner.style.display = isDemo ? 'block' : 'none';
+  demoBtn.style.display = isDemo ? 'inline-block' : 'none';
+}).catch(() => {});
 
 function fmtPrice(p) {
   if (p == null) return '—';
@@ -49,6 +58,27 @@ subBtn.addEventListener('click', async () => {
     subResult.textContent = 'Network error — try again.';
   } finally {
     subBtn.disabled = false;
+  }
+});
+
+demoBtn.addEventListener('click', async () => {
+  const email = document.getElementById('subEmail').value.trim();
+  if (!email) { subResult.textContent = 'Enter your email first (in the box above).'; return; }
+  demoBtn.disabled = true;
+  try {
+    const res = await fetch('/api/demo/activate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email }),
+    });
+    const data = await res.json();
+    if (!res.ok) { subResult.textContent = data.error || 'Something went wrong.'; return; }
+    subResult.textContent = `Simulated payment successful for ${email} — now click "View My Insights" below using the same email.`;
+    document.getElementById('checkEmail').value = email;
+  } catch (e) {
+    subResult.textContent = 'Network error — try again.';
+  } finally {
+    demoBtn.disabled = false;
   }
 });
 

@@ -49,6 +49,10 @@
 </header>
 
 <div class="wrap">
+  <div id="demoBanner" style="display:none; background:#3a2f10; border:1px solid #5c4a12; color:#ffb84f; padding:10px 16px; border-radius:10px; margin:16px 0; font-size:.85rem;">
+    🧪 <strong>Demo mode</strong> — no real money moves and nothing is saved permanently. Use "Simulate Payment" below to test the subscriber experience.
+  </div>
+
   <div class="grid" id="priceGrid"></div>
 
   <div class="panel">
@@ -57,6 +61,7 @@
     <div class="row">
       <input type="email" id="subEmail" placeholder="you@example.com" />
       <button id="subBtn">Get Access</button>
+      <button class="secondary" id="demoBtn" style="display:none;">🧪 Simulate Payment</button>
     </div>
     <div class="row" style="margin-top:18px; border-top:1px solid var(--border); padding-top:16px;">
       <input type="email" id="checkEmail" placeholder="Already subscribed? Enter your email" />

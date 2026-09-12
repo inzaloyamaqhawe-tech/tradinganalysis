@@ -1,6 +1,6 @@
 const express = require('express');
 const cors = require('cors');
-const { Pool } = require('pg');
+const { createMemoryStorage, createPgStorage } = require('./storage');
 
 const app = express();
 app.use(cors());
@@ -11,32 +11,17 @@ const PORT = process.env.PORT || 3000;
 const ADMIN_KEY = process.env.ADMIN_KEY || 'change-me-admin-key';
 const PAYPAL_LINK = process.env.PAYPAL_LINK || 'https://paypal.me/IYTechnologies/45';
 const PRICE_MONTHLY = process.env.PRICE_LABEL || 'R45/month';
+const DEMO_MODE = !process.env.DATABASE_URL;
 
-// ---- DB ----
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false,
-});
-
-async function initDb() {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS subscribers (
-      email TEXT PRIMARY KEY,
-      status TEXT NOT NULL DEFAULT 'pending',
-      expires_at TIMESTAMPTZ,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-    );
-  `);
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS price_history (
-      id SERIAL PRIMARY KEY,
-      instrument TEXT NOT NULL,
-      price NUMERIC NOT NULL,
-      polled_at TIMESTAMPTZ NOT NULL DEFAULT now()
-    );
-  `);
-  await pool.query(`CREATE INDEX IF NOT EXISTS idx_price_history_inst_time ON price_history (instrument, polled_at DESC);`);
+// ---- Storage: real Postgres if DATABASE_URL is set, else in-memory demo mode ----
+let store;
+if (DEMO_MODE) {
+  console.log('[demo mode] no DATABASE_URL set — using in-memory storage, no real payments required.');
+  store = createMemoryStorage();
+} else {
+  const { Pool } = require('pg');
+  const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
+  store = createPgStorage(pool);
 }
 
 // ---- Instruments ----
@@ -114,18 +99,7 @@ async function pollAllAndStore() {
     const cryptoRows = await pollCrypto();
     const fxRows = await pollForex();
     const rows = [...cryptoRows, ...fxRows];
-    if (rows.length) {
-      const values = [];
-      const params = [];
-      rows.forEach((r, idx) => {
-        params.push(r.instrument, r.price);
-        values.push(`($${idx * 2 + 1}, $${idx * 2 + 2})`);
-      });
-      await pool.query(
-        `INSERT INTO price_history (instrument, price) VALUES ${values.join(',')}`,
-        params
-      );
-    }
+    await store.addPollBatch(rows);
     console.log(`[poll] stored ${rows.length} price points @ ${new Date().toISOString()}`);
   } catch (e) {
     console.error('poll failed', e);
@@ -134,14 +108,10 @@ async function pollAllAndStore() {
 
 // Simple SMA-crossover signal from our own stored history.
 async function computeSignal(instrument) {
-  const { rows } = await pool.query(
-    `SELECT price FROM price_history WHERE instrument = $1 ORDER BY polled_at DESC LIMIT 20`,
-    [instrument]
-  );
-  if (rows.length < 8) {
+  const prices = await store.getHistory(instrument, 20);
+  if (prices.length < 8) {
     return { signal: 'HOLD', note: 'Gathering data — check back in a few hours for a confident signal.' };
   }
-  const prices = rows.map(r => parseFloat(r.price));
   const sma = (arr) => arr.reduce((a, b) => a + b, 0) / arr.length;
   const short = sma(prices.slice(0, Math.min(5, prices.length)));
   const long = sma(prices);
@@ -158,6 +128,10 @@ async function computeSignal(instrument) {
 // ---- Routes ----
 app.get('/health', (req, res) => res.json({ ok: true }));
 
+app.get('/api/config', (req, res) => {
+  res.json({ demoMode: DEMO_MODE, payLink: PAYPAL_LINK, price: PRICE_MONTHLY });
+});
+
 app.get('/api/prices', (req, res) => {
   const assets = ALL_KEYS.map(key => ({
     key,
@@ -166,7 +140,7 @@ app.get('/api/prices', (req, res) => {
     changePct: latestCache[key]?.changePct ?? null,
     updatedAt: latestCache[key]?.updatedAt ?? null,
   }));
-  res.json({ assets, payLink: PAYPAL_LINK, price: PRICE_MONTHLY });
+  res.json({ assets, payLink: PAYPAL_LINK, price: PRICE_MONTHLY, demoMode: DEMO_MODE });
 });
 
 app.post('/api/subscribe', async (req, res) => {
@@ -174,25 +148,33 @@ app.post('/api/subscribe', async (req, res) => {
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     return res.status(400).json({ error: 'Enter a valid email address.' });
   }
-  await pool.query(
-    `INSERT INTO subscribers (email, status) VALUES ($1, 'pending')
-     ON CONFLICT (email) DO NOTHING`,
-    [email]
-  );
+  await store.upsertPending(email);
   res.json({
     ok: true,
+    demoMode: DEMO_MODE,
     payLink: PAYPAL_LINK,
     price: PRICE_MONTHLY,
-    instructions: `Pay ${PRICE_MONTHLY} via the link, then message us your payment reference with this email (${email}) so we can activate your access. Activation is manual for now — usually within a few hours.`,
+    instructions: DEMO_MODE
+      ? `Demo mode: no real charge. Click "Simulate Payment" below to test what a subscriber sees.`
+      : `Pay ${PRICE_MONTHLY} via the link, then message us your payment reference with this email (${email}) so we can activate your access. Activation is manual for now — usually within a few hours.`,
   });
+});
+
+// Demo-only: instantly activates a subscriber with no real payment, so the
+// flow can be tested end-to-end before real payments/DB are wired in.
+app.post('/api/demo/activate', async (req, res) => {
+  if (!DEMO_MODE) return res.status(403).json({ error: 'Demo activation is disabled — real payments are live.' });
+  const email = String(req.body?.email || '').trim().toLowerCase();
+  if (!email) return res.status(400).json({ error: 'email required' });
+  await store.activate(email, 30);
+  res.json({ ok: true });
 });
 
 app.get('/api/insights', async (req, res) => {
   const email = String(req.query.email || '').trim().toLowerCase();
   if (!email) return res.status(400).json({ error: 'email is required' });
 
-  const { rows } = await pool.query(`SELECT * FROM subscribers WHERE email = $1`, [email]);
-  const sub = rows[0];
+  const sub = await store.getSubscriber(email);
   const active = sub && sub.status === 'active' && sub.expires_at && new Date(sub.expires_at) > new Date();
 
   if (!active) {
@@ -220,31 +202,26 @@ function requireAdmin(req, res, next) {
 }
 
 app.get('/api/admin/subscribers', requireAdmin, async (req, res) => {
-  const { rows } = await pool.query(`SELECT email, status, expires_at, created_at FROM subscribers ORDER BY created_at DESC`);
-  res.json({ subscribers: rows });
+  res.json({ subscribers: await store.listSubscribers() });
 });
 
 app.post('/api/admin/activate', requireAdmin, async (req, res) => {
   const email = String(req.body?.email || '').trim().toLowerCase();
   const days = Number(req.body?.days || 30);
   if (!email) return res.status(400).json({ error: 'email required' });
-  await pool.query(
-    `INSERT INTO subscribers (email, status, expires_at) VALUES ($1, 'active', now() + ($2 || ' days')::interval)
-     ON CONFLICT (email) DO UPDATE SET status = 'active', expires_at = now() + ($2 || ' days')::interval, updated_at = now()`,
-    [email, days]
-  );
+  await store.activate(email, days);
   res.json({ ok: true });
 });
 
 app.post('/api/admin/deactivate', requireAdmin, async (req, res) => {
   const email = String(req.body?.email || '').trim().toLowerCase();
   if (!email) return res.status(400).json({ error: 'email required' });
-  await pool.query(`UPDATE subscribers SET status = 'inactive', updated_at = now() WHERE email = $1`, [email]);
+  await store.deactivate(email);
   res.json({ ok: true });
 });
 
 // ---- Startup ----
-initDb()
+store.init()
   .then(() => pollAllAndStore())
   .then(() => {
     setInterval(pollAllAndStore, 10 * 60 * 1000); // every 10 minutes

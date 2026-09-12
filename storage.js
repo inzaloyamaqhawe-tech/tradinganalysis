@@ -1,0 +1,134 @@
+// Storage abstraction: uses Postgres when DATABASE_URL is set, otherwise
+// falls back to a simple in-memory store so the app can run in "demo mode"
+// with zero setup (no DB, no real payments).
+
+const HISTORY_LIMIT = 20;
+
+function createMemoryStorage() {
+  const subscribers = new Map(); // email -> { email, status, expires_at, created_at }
+  const history = new Map(); // instrument -> [{ price, polled_at }] most-recent-first
+
+  return {
+    mode: 'memory',
+    async init() {},
+
+    async addPollBatch(rows) {
+      const now = new Date().toISOString();
+      for (const { instrument, price } of rows) {
+        const arr = history.get(instrument) || [];
+        arr.unshift({ price, polled_at: now });
+        if (arr.length > HISTORY_LIMIT) arr.length = HISTORY_LIMIT;
+        history.set(instrument, arr);
+      }
+    },
+
+    async getHistory(instrument, limit = HISTORY_LIMIT) {
+      return (history.get(instrument) || []).slice(0, limit).map(r => r.price);
+    },
+
+    async getSubscriber(email) {
+      return subscribers.get(email) || null;
+    },
+
+    async upsertPending(email) {
+      if (!subscribers.has(email)) {
+        subscribers.set(email, { email, status: 'pending', expires_at: null, created_at: new Date().toISOString() });
+      }
+    },
+
+    async activate(email, days) {
+      const expires = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
+      subscribers.set(email, {
+        email,
+        status: 'active',
+        expires_at: expires,
+        created_at: subscribers.get(email)?.created_at || new Date().toISOString(),
+      });
+    },
+
+    async deactivate(email) {
+      const s = subscribers.get(email);
+      if (s) s.status = 'inactive';
+    },
+
+    async listSubscribers() {
+      return [...subscribers.values()].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+    },
+  };
+}
+
+function createPgStorage(pool) {
+  return {
+    mode: 'postgres',
+    async init() {
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS subscribers (
+          email TEXT PRIMARY KEY,
+          status TEXT NOT NULL DEFAULT 'pending',
+          expires_at TIMESTAMPTZ,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+      `);
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS price_history (
+          id SERIAL PRIMARY KEY,
+          instrument TEXT NOT NULL,
+          price NUMERIC NOT NULL,
+          polled_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+      `);
+      await pool.query(`CREATE INDEX IF NOT EXISTS idx_price_history_inst_time ON price_history (instrument, polled_at DESC);`);
+    },
+
+    async addPollBatch(rows) {
+      if (!rows.length) return;
+      const values = [];
+      const params = [];
+      rows.forEach((r, idx) => {
+        params.push(r.instrument, r.price);
+        values.push(`($${idx * 2 + 1}, $${idx * 2 + 2})`);
+      });
+      await pool.query(`INSERT INTO price_history (instrument, price) VALUES ${values.join(',')}`, params);
+    },
+
+    async getHistory(instrument, limit = HISTORY_LIMIT) {
+      const { rows } = await pool.query(
+        `SELECT price FROM price_history WHERE instrument = $1 ORDER BY polled_at DESC LIMIT $2`,
+        [instrument, limit]
+      );
+      return rows.map(r => parseFloat(r.price));
+    },
+
+    async getSubscriber(email) {
+      const { rows } = await pool.query(`SELECT * FROM subscribers WHERE email = $1`, [email]);
+      return rows[0] || null;
+    },
+
+    async upsertPending(email) {
+      await pool.query(
+        `INSERT INTO subscribers (email, status) VALUES ($1, 'pending') ON CONFLICT (email) DO NOTHING`,
+        [email]
+      );
+    },
+
+    async activate(email, days) {
+      await pool.query(
+        `INSERT INTO subscribers (email, status, expires_at) VALUES ($1, 'active', now() + ($2 || ' days')::interval)
+         ON CONFLICT (email) DO UPDATE SET status = 'active', expires_at = now() + ($2 || ' days')::interval, updated_at = now()`,
+        [email, days]
+      );
+    },
+
+    async deactivate(email) {
+      await pool.query(`UPDATE subscribers SET status = 'inactive', updated_at = now() WHERE email = $1`, [email]);
+    },
+
+    async listSubscribers() {
+      const { rows } = await pool.query(`SELECT email, status, expires_at, created_at FROM subscribers ORDER BY created_at DESC`);
+      return rows;
+    },
+  };
+}
+
+module.exports = { createMemoryStorage, createPgStorage };
