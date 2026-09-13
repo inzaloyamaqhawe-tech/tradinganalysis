@@ -8,7 +8,11 @@ const { sendMail } = require('./mailer');
 const app = express();
 app.use(cors());
 app.use(express.json());
-app.use(express.static('public'));
+// We redeploy often during active development — always revalidate static
+// assets instead of letting browsers cache a stale index.html/app.js
+// indefinitely (that class of bug looks exactly like a server-side bug from
+// the user's side, but is actually just an old page still running).
+app.use(express.static('public', { etag: true, lastModified: true, setHeaders: (res) => res.setHeader('Cache-Control', 'no-cache') }));
 
 const PORT = process.env.PORT || 3000;
 const ADMIN_KEY = process.env.ADMIN_KEY || 'change-me-admin-key';
