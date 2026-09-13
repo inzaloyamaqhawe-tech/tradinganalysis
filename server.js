@@ -228,6 +228,21 @@ app.get('/api/config', (req, res) => {
   res.json({ demoMode: DEMO_MODE, payLink: PAYPAL_LINK, price: PRICE_MONTHLY });
 });
 
+// Currency conversion for display only — billing stays in ZAR via PayPal.
+app.get('/api/currency/convert', async (req, res) => {
+  const to = String(req.query.to || 'USD').toUpperCase();
+  const amount = parseFloat(req.query.amount || '0');
+  try {
+    const r = await fetch(`https://api.frankfurter.dev/v1/latest?base=ZAR&symbols=${to}`);
+    const json = await r.json();
+    const rate = json?.rates?.[to];
+    if (!rate) return res.status(400).json({ error: 'Unsupported currency' });
+    res.json({ from: 'ZAR', to, rate, amount, converted: Math.round(amount * rate * 100) / 100 });
+  } catch (e) {
+    res.status(502).json({ error: 'Conversion service unavailable' });
+  }
+});
+
 // ---- Accounts: email+password with an opaque session token, so a visitor
 // signs up once instead of retyping their email everywhere. Passwords are
 // hashed with scrypt (Node's built-in crypto — no extra dependency).

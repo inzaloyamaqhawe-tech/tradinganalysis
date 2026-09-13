@@ -82,6 +82,7 @@ document.getElementById('goPricingBtn')?.addEventListener('click', () => showVie
 
 // ---------- Config / demo mode ----------
 let isDemo = false;
+let planPriceZar = 45;
 fetch('/api/config').then(r => r.json()).then(cfg => {
   isDemo = !!cfg.demoMode;
   document.getElementById('demoBanner').style.display = isDemo ? 'block' : 'none';
@@ -90,8 +91,23 @@ fetch('/api/config').then(r => r.json()).then(cfg => {
   if (cfg.price) {
     document.getElementById('planPrice').innerHTML = `${cfg.price.split('/')[0]} <span>/ month</span>`;
     document.getElementById('lockedPrice').textContent = cfg.price;
+    planPriceZar = parseFloat(cfg.price.replace(/[^\d.]/g, '')) || 45;
   }
 }).catch(() => {});
+
+// ---------- Currency conversion (display only — billing stays in ZAR via PayPal) ----------
+const CURRENCY_SYMBOL = { ZAR: 'R', USD: '$', EUR: '€', GBP: '£', AUD: 'A$', NGN: '₦', KES: 'KSh', INR: '₹' };
+document.getElementById('currencySelect')?.addEventListener('change', async (e) => {
+  const to = e.target.value;
+  const altPrice = document.getElementById('altPrice');
+  if (to === 'ZAR') { altPrice.textContent = ''; return; }
+  altPrice.textContent = 'converting…';
+  try {
+    const res = await fetch(`/api/currency/convert?amount=${planPriceZar}&to=${to}`);
+    const data = await res.json();
+    altPrice.textContent = data.converted != null ? `≈ ${CURRENCY_SYMBOL[to] || to}${data.converted} ${to}` : '';
+  } catch (e) { altPrice.textContent = ''; }
+});
 
 // ---------- Dashboard: live prices ----------
 const priceGrid = document.getElementById('priceGrid');

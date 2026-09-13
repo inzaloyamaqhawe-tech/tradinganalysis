@@ -128,14 +128,28 @@
   <!-- PRICING -->
   <section class="view" data-view="pricing">
     <h1>Pricing</h1>
-    <p class="section-sub">One plan. Cancel anytime.</p>
+    <p class="section-sub">One plan. Cancel anytime. Billed in ZAR via PayPal — other currencies shown below for convenience only.</p>
+    <div class="row" style="margin-bottom:6px;">
+      <label class="note" style="margin:0;">Show price in:</label>
+      <select id="currencySelect" class="currency-select" style="max-width:140px; min-width:100px;">
+        <option value="ZAR">ZAR (R)</option>
+        <option value="USD">USD ($)</option>
+        <option value="EUR">EUR (€)</option>
+        <option value="GBP">GBP (£)</option>
+        <option value="AUD">AUD (A$)</option>
+        <option value="NGN">NGN (₦)</option>
+        <option value="KES">KES (KSh)</option>
+        <option value="INR">INR (₹)</option>
+      </select>
+    </div>
 
     <div class="plan-card">
       <div class="label" style="color:var(--gold); font-weight:700; letter-spacing:.05em; font-size:.8rem;">PREMIUM INSIGHTS</div>
       <div class="plan-price" id="planPrice">R45 <span>/ month</span></div>
+      <div class="note" id="altPrice" style="margin-top:-8px;"></div>
       <ul class="plan-list">
-        <li>Live BUY / SELL / HOLD signal on all 12 markets</li>
-        <li>Regime + strategy detail behind every signal</li>
+        <li>Live bias + confidence read on all 12 markets</li>
+        <li>Regime + strategy detail behind every insight</li>
         <li>Free live prices for everyone, always</li>
       </ul>
       <div class="row">
