@@ -83,6 +83,7 @@ document.getElementById('goPricingBtn')?.addEventListener('click', () => showVie
 // ---------- Config / demo mode ----------
 let isDemo = false;
 let planPriceZar = 45;
+let availableTimeframes = ['1h'];
 fetch('/api/config').then(r => r.json()).then(cfg => {
   isDemo = !!cfg.demoMode;
   document.getElementById('demoBanner').style.display = isDemo ? 'block' : 'none';
@@ -92,6 +93,10 @@ fetch('/api/config').then(r => r.json()).then(cfg => {
     document.getElementById('planPrice').innerHTML = `${cfg.price.split('/')[0]} <span>/ month</span>`;
     document.getElementById('lockedPrice').textContent = cfg.price;
     planPriceZar = parseFloat(cfg.price.replace(/[^\d.]/g, '')) || 45;
+  }
+  if (Array.isArray(cfg.timeframes)) {
+    availableTimeframes = cfg.timeframes;
+    renderTimeframeGroup();
   }
 }).catch(() => {});
 
@@ -449,8 +454,51 @@ window.addEventListener('mouseup', () => {
   isDragging = false;
 });
 
+let currentTimeframe = '1h';
+
+function renderTimeframeGroup() {
+  const host = document.getElementById('timeframeGroup');
+  host.innerHTML = availableTimeframes.map(tf => `<button class="tool-btn ${tf === currentTimeframe ? 'active' : ''}" data-tf="${tf}">${tf}</button>`).join('');
+  host.querySelectorAll('[data-tf]').forEach(btn => btn.addEventListener('click', () => {
+    currentTimeframe = btn.dataset.tf;
+    host.querySelectorAll('[data-tf]').forEach(b => b.classList.toggle('active', b.dataset.tf === currentTimeframe));
+    if (currentChartKey) loadChartData(currentChartKey);
+  }));
+}
+
+async function loadChartData(key) {
+  document.getElementById('chartSub').textContent = 'Loading…';
+  const email = currentUser?.email || knownEmail();
+  try {
+    const res = await fetch(`/api/history?key=${encodeURIComponent(key)}&timeframe=${encodeURIComponent(currentTimeframe)}${email ? `&email=${encodeURIComponent(email)}` : ''}`, { headers: authHeaders() });
+    const data = await res.json();
+    chartState = { candles: data.candles || [], closes: data.closes || [], ema8: data.ema8, ema21: data.ema21, levels: data.insight?.levels };
+    updateSidePanel(key, data);
+    resizeCanvases();
+
+    const rangeTxt = data.high != null ? `Range (${currentTimeframe}, tracked window): ${data.low} – ${data.high}` : `No candles yet at ${currentTimeframe} — try 1h, or add a Twelve Data key for full FX timeframe coverage.`;
+    document.getElementById('chartSub').textContent = rangeTxt;
+
+    if (data.premium) {
+      enableDrawing(true);
+      const legend = document.getElementById('chartLegend');
+      const insight = data.insight;
+      const sigColor = insight?.signal === 'BUY' ? '#2fd480' : insight?.signal === 'SELL' ? '#ff5d6c' : '#8b98ad';
+      legend.innerHTML = `<span style="color:#f2b84b;">■</span> EMA8 &nbsp; <span style="color:#ff5d6c;">■</span> EMA21` +
+        (insight ? ` &nbsp;·&nbsp; <strong style="color:${sigColor};">${BIAS_LABEL[insight.signal]}</strong>${insight.confidence != null ? ` (${insight.confidence}/100)` : ''}${insight.strategy ? ` · ${insight.strategy}` : ''} <span class="note" style="margin:0;">(engine reads 1h structure regardless of chart view)</span>` : '');
+    } else {
+      enableDrawing(false);
+      document.getElementById('chartLockedNote').style.display = 'block';
+    }
+  } catch (e) {
+    document.getElementById('chartSub').textContent = 'Failed to load chart data.';
+  }
+}
+
 async function openChart(key, label) {
   currentChartKey = key;
+  currentTimeframe = '1h';
+  renderTimeframeGroup();
   document.getElementById('chartTitle').textContent = label;
   document.getElementById('chartSub').textContent = 'Loading…';
   document.getElementById('chartLegend').textContent = '';
@@ -462,32 +510,7 @@ async function openChart(key, label) {
   chartModal.classList.add('open');
   renderSymbolRibbon();
   resizeCanvases();
-
-  const email = currentUser?.email || knownEmail();
-  try {
-    const res = await fetch(`/api/history?key=${encodeURIComponent(key)}${email ? `&email=${encodeURIComponent(email)}` : ''}`, { headers: authHeaders() });
-    const data = await res.json();
-    chartState = { candles: data.candles || [], closes: data.closes || [], ema8: data.ema8, ema21: data.ema21, levels: data.insight?.levels };
-    updateSidePanel(key, data);
-    resizeCanvases();
-
-    const rangeTxt = data.high != null ? `Range (tracked window): ${data.low} – ${data.high}` : '';
-    document.getElementById('chartSub').textContent = rangeTxt;
-
-    if (data.premium) {
-      enableDrawing(true);
-      const legend = document.getElementById('chartLegend');
-      const insight = data.insight;
-      const sigColor = insight?.signal === 'BUY' ? '#2fd480' : insight?.signal === 'SELL' ? '#ff5d6c' : '#8b98ad';
-      legend.innerHTML = `<span style="color:#f2b84b;">■</span> EMA8 &nbsp; <span style="color:#ff5d6c;">■</span> EMA21` +
-        (insight ? ` &nbsp;·&nbsp; <strong style="color:${sigColor};">${BIAS_LABEL[insight.signal]}</strong>${insight.confidence != null ? ` (${insight.confidence}/100)` : ''}` : '');
-    } else {
-      enableDrawing(false);
-      document.getElementById('chartLockedNote').style.display = 'block';
-    }
-  } catch (e) {
-    document.getElementById('chartSub').textContent = 'Failed to load chart data.';
-  }
+  await loadChartData(key);
 }
 
 document.getElementById('chartClose').addEventListener('click', () => chartModal.classList.remove('open'));

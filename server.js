@@ -157,17 +157,43 @@ async function pollAllAndStore() {
 
 const CRYPTO_KEYS = new Set(CRYPTO_INSTRUMENTS.map(c => c.key));
 
-// Shared candle retrieval — crypto gets real 1h candles straight from the
+// Chart timeframe selector — the trading ENGINE always reads 1h structure
+// (that's the granularity every threshold in signals.js was tuned against),
+// but the CHART is free to display any of these; only the visual EMA overlay
+// re-renders at the chosen timeframe, never the signal/regime/levels.
+const TIMEFRAMES = ['1m', '5m', '15m', '30m', '1h', '4h', '1D', '1W', '1M'];
+const CRYPTO_TF_MAP = { '1m': '1m', '5m': '5m', '15m': '15m', '30m': '30m', '1h': '1h', '4h': '4h', '1D': '1D', '1W': '7D', '1M': '1M' };
+const TWELVEDATA_TF_MAP = { '1m': '1min', '5m': '5min', '15m': '15min', '30m': '30min', '1h': '1h', '4h': '4h', '1D': '1day', '1W': '1week', '1M': '1month' };
+
+async function fetchCryptoCandles(key, timeframe) {
+  const res = await fetch(`https://api.crypto.com/exchange/v1/public/get-candlestick?instrument_name=${key}&timeframe=${CRYPTO_TF_MAP[timeframe]}&count=100`);
+  const json = await res.json();
+  const data = json?.result?.data || [];
+  return data.map(c => ({ open: parseFloat(c.o), high: parseFloat(c.h), low: parseFloat(c.l), close: parseFloat(c.c) }));
+}
+
+// Shared candle retrieval — crypto gets real candles straight from the
 // exchange; FX/gold get real candles from Twelve Data once configured,
 // otherwise fall back to bucketing our own 10-minute price polls into
-// synthetic (lower-fidelity, slow-to-bootstrap) hourly candles.
-async function getCandlesFor(instrument) {
+// synthetic (lower-fidelity, slow-to-bootstrap, 1h-only) candles.
+async function getCandlesFor(instrument, timeframe = '1h') {
   if (CRYPTO_KEYS.has(instrument)) {
-    return cryptoCandleCache[instrument] || [];
+    if (timeframe === '1h') return cryptoCandleCache[instrument] || [];
+    try { return await fetchCryptoCandles(instrument, timeframe); }
+    catch (e) { console.error(`on-demand candle fetch failed for ${instrument} @ ${timeframe}`, e.message); return []; }
   }
-  if (fxCandleCache[instrument]?.length) {
+
+  if (timeframe === '1h' && fxCandleCache[instrument]?.length) {
     return fxCandleCache[instrument];
   }
+  if (twelveData.isConfigured()) {
+    const fx = FX_INSTRUMENTS.find(f => f.key === instrument);
+    if (fx) {
+      try { return await twelveData.getCandles(fx.twelveDataSymbol, TWELVEDATA_TF_MAP[timeframe], 100); }
+      catch (e) { console.error(`Twelve Data on-demand fetch failed for ${instrument} @ ${timeframe}`, e.message); }
+    }
+  }
+  if (timeframe !== '1h') return []; // no source for non-1h FX candles without Twelve Data
   const recentFirst = await store.getHistory(instrument, 600);
   return buildSyntheticCandles(recentFirst.slice().reverse(), 3);
 }
@@ -248,7 +274,7 @@ function computePerformanceStats(rows) {
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 app.get('/api/config', (req, res) => {
-  res.json({ demoMode: DEMO_MODE, payLink: PAYPAL_LINK, price: PRICE_MONTHLY });
+  res.json({ demoMode: DEMO_MODE, payLink: PAYPAL_LINK, price: PRICE_MONTHLY, timeframes: TIMEFRAMES });
 });
 
 // Currency conversion for display only — billing stays in ZAR via PayPal.
@@ -446,22 +472,30 @@ app.get('/api/history', async (req, res) => {
     premium = !!(sub && sub.status === 'active' && sub.expires_at && new Date(sub.expires_at) > new Date());
   }
 
-  const candles = await getCandlesFor(key);
-  const closes = candles.map(c => c.close);
+  const timeframe = TIMEFRAMES.includes(req.query.timeframe) ? req.query.timeframe : '1h';
+
+  // The engine's signal/regime/levels are always computed on 1h structure —
+  // every threshold in signals.js was tuned at that granularity, so this
+  // stays fixed regardless of what the user is looking at on the chart.
+  const engineCandles = await getCandlesFor(key); // always 1h (default param)
+  const displayCandles = timeframe === '1h' ? engineCandles : await getCandlesFor(key, timeframe);
+  const closes = displayCandles.map(c => c.close);
   const payload = {
     key,
     label: LABELS[key],
-    candles, // full OHLC, for candlestick rendering
+    timeframe,
+    candles: displayCandles, // full OHLC, for candlestick rendering
     closes,  // convenience array, for line rendering
-    high: candles.length ? Math.max(...candles.map(c => c.high)) : null,
-    low: candles.length ? Math.min(...candles.map(c => c.low)) : null,
+    high: displayCandles.length ? Math.max(...displayCandles.map(c => c.high)) : null,
+    low: displayCandles.length ? Math.min(...displayCandles.map(c => c.low)) : null,
     premium,
   };
 
   if (premium && closes.length) {
     payload.ema8 = emaSeries(closes, EMA_FAST_PERIOD);
     payload.ema21 = emaSeries(closes, EMA_SLOW_PERIOD);
-    payload.insight = runEngine(candles);
+    payload.insight = runEngine(engineCandles);
+    payload.insight.engineTimeframe = '1h'; // so the UI can label it even when displaying a different timeframe
   }
 
   res.json(payload);

@@ -141,6 +141,7 @@ img { max-width: 100%; }
 
 .chart-toolbar { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
 .tool-group { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; background: var(--bg-soft); border: 1px solid var(--border); border-radius: 10px; padding: 4px 8px; }
+#timeframeGroup { margin-bottom: 10px; width: fit-content; }
 .tool-btn {
   background: transparent; border: none; color: var(--muted); font-weight: 600; font-size: .8rem;
   padding: 7px 10px; border-radius: 7px; cursor: pointer; white-space: nowrap;
