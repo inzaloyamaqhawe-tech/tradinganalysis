@@ -32,6 +32,7 @@ function createMemoryStorage() {
           sessions: [...sessions.entries()],
           signalLog,
           signalLogSeq,
+          history: [...history.entries()],
         }));
       } catch (e) { console.error('[storage] persist failed (non-fatal):', e.message); }
     }, 200);
@@ -44,7 +45,8 @@ function createMemoryStorage() {
       (data.sessions || []).forEach(([k, v]) => sessions.set(k, v));
       (data.signalLog || []).forEach(row => signalLog.push(row));
       signalLogSeq = data.signalLogSeq || 1;
-      console.log(`[storage] restored ${subscribers.size} account(s), ${sessions.size} session(s) from ${DATA_FILE}`);
+      (data.history || []).forEach(([k, v]) => history.set(k, v));
+      console.log(`[storage] restored ${subscribers.size} account(s), ${sessions.size} session(s), ${[...history.values()].reduce((n, a) => n + a.length, 0)} price point(s) from ${DATA_FILE}`);
     } catch (e) { console.error('[storage] load failed (non-fatal):', e.message); }
   }
 
@@ -90,6 +92,7 @@ function createMemoryStorage() {
         if (arr.length > HISTORY_LIMIT) arr.length = HISTORY_LIMIT;
         history.set(instrument, arr);
       }
+      scheduleSave();
     },
 
     async getHistory(instrument, limit = HISTORY_LIMIT) {

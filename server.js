@@ -4,6 +4,7 @@ const crypto = require('crypto');
 const { createMemoryStorage, createPgStorage } = require('./storage');
 const { runEngine, buildSyntheticCandles, emaSeries, EMA_FAST_PERIOD, EMA_SLOW_PERIOD } = require('./signals');
 const { sendMail } = require('./mailer');
+const twelveData = require('./twelvedata');
 
 const app = express();
 app.use(cors());
@@ -44,9 +45,15 @@ const CRYPTO_INSTRUMENTS = [
   { key: 'DOT_USDT', label: 'DOT/USDT' },
   { key: 'LTC_USDT', label: 'LTC/USDT' },
 ];
+// kind 'fiat': live tick via Frankfurter (base->quote). kind 'metal': via
+// gold-api.com. twelveDataSymbol: real candle feed once TWELVEDATA_API_KEY
+// is set — without it, these fall back to a slow self-built synthetic
+// candle bootstrap (see getCandlesFor below).
 const FX_INSTRUMENTS = [
-  { key: 'GBPUSD', label: 'GBP/USD' },
-  { key: 'XAUUSD', label: 'XAU/USD (Gold)' },
+  { key: 'EURUSD', label: 'EUR/USD', kind: 'fiat', base: 'EUR', quote: 'USD', twelveDataSymbol: 'EUR/USD' },
+  { key: 'GBPUSD', label: 'GBP/USD', kind: 'fiat', base: 'GBP', quote: 'USD', twelveDataSymbol: 'GBP/USD' },
+  { key: 'USDJPY', label: 'USD/JPY', kind: 'fiat', base: 'USD', quote: 'JPY', twelveDataSymbol: 'USD/JPY' },
+  { key: 'XAUUSD', label: 'XAU/USD (Gold)', kind: 'metal', twelveDataSymbol: 'XAU/USD' },
 ];
 const ALL_KEYS = [...CRYPTO_INSTRUMENTS, ...FX_INSTRUMENTS].map(a => a.key);
 const LABELS = Object.fromEntries([...CRYPTO_INSTRUMENTS, ...FX_INSTRUMENTS].map(a => [a.key, a.label]));
@@ -94,31 +101,42 @@ async function pollCryptoCandles() {
 
 async function pollForex() {
   const rows = [];
-  try {
-    const res = await fetch('https://api.frankfurter.dev/v1/latest?base=GBP&symbols=USD');
-    const json = await res.json();
-    const price = json?.rates?.USD;
-    if (isFinite(price)) {
-      const prev = latestCache['GBPUSD']?.price;
-      const changePct = prev ? ((price - prev) / prev) * 100 : 0;
-      latestCache['GBPUSD'] = { price, changePct, updatedAt: new Date().toISOString() };
-      rows.push({ instrument: 'GBPUSD', price });
-    }
-  } catch (e) { console.error('GBPUSD poll failed', e.message); }
-
-  try {
-    const res = await fetch('https://api.gold-api.com/price/XAU');
-    const json = await res.json();
-    const price = json?.price;
-    if (isFinite(price)) {
-      const prev = latestCache['XAUUSD']?.price;
-      const changePct = prev ? ((price - prev) / prev) * 100 : 0;
-      latestCache['XAUUSD'] = { price, changePct, updatedAt: new Date().toISOString() };
-      rows.push({ instrument: 'XAUUSD', price });
-    }
-  } catch (e) { console.error('XAUUSD poll failed', e.message); }
-
+  for (const fx of FX_INSTRUMENTS) {
+    try {
+      let price;
+      if (fx.kind === 'metal') {
+        const res = await fetch('https://api.gold-api.com/price/XAU');
+        const json = await res.json();
+        price = json?.price;
+      } else {
+        const res = await fetch(`https://api.frankfurter.dev/v1/latest?base=${fx.base}&symbols=${fx.quote}`);
+        const json = await res.json();
+        price = json?.rates?.[fx.quote];
+      }
+      if (isFinite(price)) {
+        const prev = latestCache[fx.key]?.price;
+        const changePct = prev ? ((price - prev) / prev) * 100 : 0;
+        latestCache[fx.key] = { price, changePct, updatedAt: new Date().toISOString() };
+        rows.push({ instrument: fx.key, price });
+      }
+    } catch (e) { console.error(`${fx.key} poll failed`, e.message); }
+  }
   return rows;
+}
+
+// Real OHLC candles for FX/gold via Twelve Data — same idea as
+// pollCryptoCandles, just a different upstream. No-op (and the synthetic
+// fallback in getCandlesFor takes over) until TWELVEDATA_API_KEY is set.
+let fxCandleCache = {};
+async function pollForexCandles() {
+  if (!twelveData.isConfigured()) return;
+  for (const fx of FX_INSTRUMENTS) {
+    try {
+      fxCandleCache[fx.key] = await twelveData.getCandles(fx.twelveDataSymbol, '1h', 100);
+    } catch (e) {
+      console.error(`Twelve Data candle poll failed for ${fx.key}`, e.message);
+    }
+  }
 }
 
 async function pollAllAndStore() {
@@ -128,6 +146,7 @@ async function pollAllAndStore() {
     const rows = [...cryptoRows, ...fxRows];
     await store.addPollBatch(rows);
     await pollCryptoCandles();
+    await pollForexCandles();
     await trackSignals();
     lastPollAt = new Date().toISOString();
     console.log(`[poll] stored ${rows.length} price points + refreshed crypto candles + tracked signals @ ${lastPollAt}`);
@@ -139,14 +158,18 @@ async function pollAllAndStore() {
 const CRYPTO_KEYS = new Set(CRYPTO_INSTRUMENTS.map(c => c.key));
 
 // Shared candle retrieval — crypto gets real 1h candles straight from the
-// exchange; FX/gold don't have a free real-time candle feed, so we bucket
-// our own 10-minute price polls into synthetic hourly candles instead.
+// exchange; FX/gold get real candles from Twelve Data once configured,
+// otherwise fall back to bucketing our own 10-minute price polls into
+// synthetic (lower-fidelity, slow-to-bootstrap) hourly candles.
 async function getCandlesFor(instrument) {
   if (CRYPTO_KEYS.has(instrument)) {
     return cryptoCandleCache[instrument] || [];
   }
+  if (fxCandleCache[instrument]?.length) {
+    return fxCandleCache[instrument];
+  }
   const recentFirst = await store.getHistory(instrument, 600);
-  return buildSyntheticCandles(recentFirst.slice().reverse(), 6);
+  return buildSyntheticCandles(recentFirst.slice().reverse(), 3);
 }
 
 // Multi-strategy engine (signals.js, ported from BOTS/universal.py).

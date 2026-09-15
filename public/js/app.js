@@ -6,7 +6,7 @@ const BIAS_LABEL = { BUY: 'BULLISH BIAS', SELL: 'BEARISH BIAS', HOLD: 'NEUTRAL' 
 // Standard pip size per instrument, for the Long/Short drag tool's live
 // distance readout. Crypto has no real "pip" convention, so those just show
 // a plain price distance instead of a fabricated pip count.
-const PIP_SIZE = { GBPUSD: 0.0001, XAUUSD: 0.01 };
+const PIP_SIZE = { EURUSD: 0.0001, GBPUSD: 0.0001, USDJPY: 0.01, XAUUSD: 0.01 };
 function formatDistance(priceDist, instrumentKey) {
   const pipSize = PIP_SIZE[instrumentKey];
   const abs = Math.abs(priceDist);
