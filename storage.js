@@ -66,7 +66,7 @@ function createMemoryStorage() {
     async deleteSession(token) { sessions.delete(token); scheduleSave(); },
 
     async logSignal(rec) {
-      const row = { id: signalLogSeq++, status: 'open', outcome: null, best_level: null, closed_at: null, created_at: new Date().toISOString(), ...rec };
+      const row = { id: signalLogSeq++, status: 'open', outcome: null, best_level: null, hit_history: [], closed_at: null, created_at: new Date().toISOString(), ...rec };
       signalLog.push(row);
       scheduleSave();
       return row;
@@ -96,7 +96,7 @@ function createMemoryStorage() {
     },
 
     async getHistory(instrument, limit = HISTORY_LIMIT) {
-      return (history.get(instrument) || []).slice(0, limit).map(r => r.price);
+      return (history.get(instrument) || []).slice(0, limit).map(r => ({ price: r.price, time: new Date(r.polled_at).getTime() }));
     },
 
     async getSubscriber(email) {
@@ -179,10 +179,14 @@ function createPgStorage(pool) {
           status TEXT NOT NULL DEFAULT 'open',
           outcome TEXT,
           best_level TEXT,
+          hit_history JSONB NOT NULL DEFAULT '[]'::jsonb,
           created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
           closed_at TIMESTAMPTZ
         );
       `);
+      // Safe no-op if the column already exists — picks up hit-history
+      // tracking on an existing deployed DB with no manual migration.
+      await pool.query(`ALTER TABLE signal_log ADD COLUMN IF NOT EXISTS hit_history JSONB NOT NULL DEFAULT '[]'::jsonb;`);
       await pool.query(`CREATE INDEX IF NOT EXISTS idx_signal_log_status ON signal_log (status);`);
       await pool.query(`CREATE INDEX IF NOT EXISTS idx_signal_log_instrument ON signal_log (instrument, created_at DESC);`);
     },
@@ -206,7 +210,9 @@ function createPgStorage(pool) {
     async updateSignalOutcome(id, patch) {
       const fields = Object.keys(patch);
       const sets = fields.map((f, i) => `${f} = $${i + 2}`).join(', ');
-      await pool.query(`UPDATE signal_log SET ${sets} WHERE id = $1`, [id, ...fields.map(f => patch[f])]);
+      // jsonb columns need the JS array/object serialized before it hits the wire.
+      const values = fields.map(f => (f === 'hit_history' ? JSON.stringify(patch[f]) : patch[f]));
+      await pool.query(`UPDATE signal_log SET ${sets} WHERE id = $1`, [id, ...values]);
     },
     async listSignals(limit = 200) {
       const { rows } = await pool.query(`SELECT * FROM signal_log ORDER BY created_at DESC LIMIT $1`, [limit]);
@@ -245,10 +251,10 @@ function createPgStorage(pool) {
 
     async getHistory(instrument, limit = HISTORY_LIMIT) {
       const { rows } = await pool.query(
-        `SELECT price FROM price_history WHERE instrument = $1 ORDER BY polled_at DESC LIMIT $2`,
+        `SELECT price, polled_at FROM price_history WHERE instrument = $1 ORDER BY polled_at DESC LIMIT $2`,
         [instrument, limit]
       );
-      return rows.map(r => parseFloat(r.price));
+      return rows.map(r => ({ price: parseFloat(r.price), time: new Date(r.polled_at).getTime() }));
     },
 
     async getSubscriber(email) {

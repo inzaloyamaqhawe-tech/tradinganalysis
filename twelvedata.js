@@ -15,6 +15,7 @@ const configured = () => !!process.env.TWELVEDATA_API_KEY;
 async function getCandles(symbol, interval = '1h', outputsize = 100) {
   const params = new URLSearchParams({
     symbol, interval, outputsize: String(outputsize),
+    timezone: 'UTC', // so `datetime` is unambiguous and safely parseable as UTC below
     apikey: process.env.TWELVEDATA_API_KEY,
   });
   const res = await fetch(`https://api.twelvedata.com/time_series?${params}`);
@@ -24,7 +25,7 @@ async function getCandles(symbol, interval = '1h', outputsize = 100) {
   }
   // Twelve Data returns most-recent-first; the engine needs chronological order.
   return json.values
-    .map(v => ({ open: parseFloat(v.open), high: parseFloat(v.high), low: parseFloat(v.low), close: parseFloat(v.close) }))
+    .map(v => ({ open: parseFloat(v.open), high: parseFloat(v.high), low: parseFloat(v.low), close: parseFloat(v.close), time: new Date(v.datetime.replace(' ', 'T') + 'Z').getTime() }))
     .reverse();
 }
 

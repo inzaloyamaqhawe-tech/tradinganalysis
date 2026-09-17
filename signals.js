@@ -247,15 +247,21 @@ function runEngine(closed) {
 // samples (used for instruments where we only have polled last-price data,
 // not a real candle feed) by grouping every `bucketSize` samples into one
 // candle. Partial trailing groups (not yet "closed") are dropped.
-function buildSyntheticCandles(pricesChronological, bucketSize = 6) {
+// `ticksChronological` is an array of { price, time } samples (time = epoch
+// ms of that poll). Each candle's `time` is its first tick's timestamp,
+// matching the "candle time = open time" convention real OHLC APIs use —
+// needed so trade tracking can find "candles since this signal fired."
+function buildSyntheticCandles(ticksChronological, bucketSize = 6) {
   const candles = [];
-  for (let i = 0; i + bucketSize <= pricesChronological.length; i += bucketSize) {
-    const chunk = pricesChronological.slice(i, i + bucketSize);
+  for (let i = 0; i + bucketSize <= ticksChronological.length; i += bucketSize) {
+    const chunk = ticksChronological.slice(i, i + bucketSize);
+    const prices = chunk.map(t => t.price);
     candles.push({
-      open: chunk[0],
-      close: chunk.at(-1),
-      high: Math.max(...chunk),
-      low: Math.min(...chunk),
+      open: prices[0],
+      close: prices.at(-1),
+      high: Math.max(...prices),
+      low: Math.min(...prices),
+      time: chunk[0].time,
     });
   }
   return candles;

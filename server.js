@@ -91,7 +91,7 @@ async function pollCryptoCandles() {
       const json = await res.json();
       const data = json?.result?.data || [];
       cryptoCandleCache[key] = data.map(c => ({
-        open: parseFloat(c.o), high: parseFloat(c.h), low: parseFloat(c.l), close: parseFloat(c.c),
+        open: parseFloat(c.o), high: parseFloat(c.h), low: parseFloat(c.l), close: parseFloat(c.c), time: c.t,
       }));
     } catch (e) {
       console.error(`candlestick poll failed for ${key}`, e.message);
@@ -169,7 +169,7 @@ async function fetchCryptoCandles(key, timeframe) {
   const res = await fetch(`https://api.crypto.com/exchange/v1/public/get-candlestick?instrument_name=${key}&timeframe=${CRYPTO_TF_MAP[timeframe]}&count=100`);
   const json = await res.json();
   const data = json?.result?.data || [];
-  return data.map(c => ({ open: parseFloat(c.o), high: parseFloat(c.h), low: parseFloat(c.l), close: parseFloat(c.c) }));
+  return data.map(c => ({ open: parseFloat(c.o), high: parseFloat(c.h), low: parseFloat(c.l), close: parseFloat(c.c), time: c.t }));
 }
 
 // Shared candle retrieval — crypto gets real candles straight from the
@@ -204,32 +204,75 @@ async function computeSignal(instrument) {
   return runEngine(candles);
 }
 
+// Walks every candle since a signal fired and asks, authoritatively, "what
+// actually happened" — instead of just comparing the current tick to each
+// level once per poll (which misses a wick that touches a level and reverses
+// between two 10-minute polls). Ported from an older CRT dashboard's
+// trade-tracking approach (PROJECTS/CRT-Trade-Dashboard-Old-Files), not its
+// signal logic.
+//
+// A single candle can span BOTH a TP and the SL (a wide bar). OHLC alone
+// can't tell you which happened first, so — same tiebreak as the source —
+// we use the candle's own close-vs-open direction as the best available
+// signal: only credit the TP(s) if the candle closed in the winning
+// direction; otherwise assume the stop-out came first. This is a
+// conservative bias against overstating the win rate, not a coin flip.
+function resolveSignalFromCandles(sig, candles) {
+  const entryTime = new Date(sig.created_at).getTime();
+  const levels = [['TP1', sig.tp1], ['TP2', sig.tp2], ['TP3', sig.tp3], ['TP4', sig.tp4]];
+  const seen = new Set((sig.hit_history || []).map(h => h.level));
+  const hitHistory = [...(sig.hit_history || [])];
+  const isBuy = sig.side === 'BUY';
+  let slHitAt = null;
+
+  for (const c of candles) {
+    if (c.time == null || c.time < entryTime) continue;
+    const candleTPs = levels.filter(([label, lvl]) => !seen.has(label) && lvl != null && (isBuy ? c.high >= lvl : c.low <= lvl));
+    let candleSL = isBuy ? c.low <= sig.sl : c.high >= sig.sl;
+
+    // Mutually exclusive within one bar — OHLC can't tell you which extreme
+    // came first, so bar direction decides which one "actually" happened:
+    // closed in our favor → assume the TP side happened, not stopped out;
+    // closed against us → assume the SL side happened, no TP credited.
+    if (candleTPs.length && candleSL) {
+      const closedWinning = isBuy ? c.close >= c.open : c.close <= c.open;
+      if (closedWinning) candleSL = false;
+      else candleTPs.length = 0;
+    }
+    for (const [label, lvl] of candleTPs) { seen.add(label); hitHistory.push({ level: label, time: c.time, price: lvl }); }
+    if (candleSL) { slHitAt = c.time; break; } // trade is closed — nothing after this candle matters
+  }
+
+  const bestLevel = ['TP4', 'TP3', 'TP2', 'TP1'].find(l => seen.has(l)) || sig.best_level || null;
+  const status = seen.has('TP4') ? 'closed' : slHitAt ? 'closed' : 'open';
+  const outcome = seen.has('TP4') ? 'TP4' : slHitAt ? 'SL' : null;
+  const closedAt = seen.has('TP4') ? (hitHistory.find(h => h.level === 'TP4')?.time ?? Date.now()) : slHitAt;
+
+  return { hitHistory, bestLevel, status, outcome, closedAt: closedAt ? new Date(closedAt).toISOString() : null };
+}
+
 // ---- Track record: logs each new setup the engine surfaces, and resolves
-// open ones against the latest price every poll cycle. This is what lets
-// /api/performance show an honest, non-cherry-picked history (wins AND
+// open ones by walking real candle history every poll cycle. This is what
+// lets /api/performance show an honest, non-cherry-picked history (wins AND
 // losses), instead of just the live "current read".
 async function trackSignals() {
   for (const key of ALL_KEYS) {
     let result;
     try { result = await computeSignal(key); } catch (e) { continue; }
-    const price = latestCache[key]?.price;
 
-    if (price != null) {
-      const openForKey = (await store.getOpenSignals()).filter(s => s.instrument === key);
+    const openForKey = (await store.getOpenSignals()).filter(s => s.instrument === key);
+    if (openForKey.length) {
+      let candles;
+      try { candles = await getCandlesFor(key); } catch (e) { candles = []; }
       for (const sig of openForKey) {
-        const dir = sig.side === 'BUY' ? 1 : -1;
-        const levels = [['TP1', sig.tp1], ['TP2', sig.tp2], ['TP3', sig.tp3], ['TP4', sig.tp4]];
-        let bestLevel = sig.best_level;
-        for (const [label, lvl] of levels) {
-          const reached = dir === 1 ? price >= lvl : price <= lvl;
-          if (reached) bestLevel = label; // progressive — never regresses
-        }
-        const slHit = dir === 1 ? price <= sig.sl : price >= sig.sl;
-        const patch = {};
-        if (bestLevel !== sig.best_level) patch.best_level = bestLevel;
-        if (bestLevel === 'TP4') { patch.status = 'closed'; patch.outcome = 'TP4'; patch.closed_at = new Date().toISOString(); }
-        else if (slHit) { patch.status = 'closed'; patch.outcome = 'SL'; patch.closed_at = new Date().toISOString(); }
-        if (Object.keys(patch).length) await store.updateSignalOutcome(sig.id, patch);
+        if (!candles.length) continue;
+        const resolved = resolveSignalFromCandles(sig, candles);
+        const changed = JSON.stringify(resolved.hitHistory) !== JSON.stringify(sig.hit_history || [])
+          || resolved.bestLevel !== sig.best_level || resolved.status !== sig.status;
+        if (!changed) continue;
+        const patch = { hit_history: resolved.hitHistory, best_level: resolved.bestLevel };
+        if (resolved.status === 'closed') { patch.status = 'closed'; patch.outcome = resolved.outcome; patch.closed_at = resolved.closedAt; }
+        await store.updateSignalOutcome(sig.id, patch);
       }
     }
 

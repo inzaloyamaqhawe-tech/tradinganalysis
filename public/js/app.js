@@ -63,6 +63,10 @@ async function loadTrackRecord() {
       }
       const outcomeClass = r.status === 'open' ? 'open' : r.outcome === 'TP4' ? 'win' : r.outcome === 'SL' ? 'loss' : 'invalidated';
       const outcomeText = r.status === 'open' ? 'Open' : (r.outcome || '—');
+      // Trail of TPs actually touched (walked from real candle history), not
+      // just the final best level — e.g. "TP1 → TP2" shows partial progress
+      // even on a setup that hasn't reached TP4 yet.
+      const trail = (r.hit_history || []).map(h => h.level).join(' → ') || r.best_level || '—';
       return `<tr>
         <td>${new Date(r.created_at).toLocaleDateString()}</td>
         <td>${r.label || r.instrument}</td>
@@ -70,7 +74,7 @@ async function loadTrackRecord() {
         <td>${r.strategy || '—'}</td>
         <td>${r.confidence != null ? r.confidence + '/100' : '—'}</td>
         <td><span class="outcome-pill ${outcomeClass}">${outcomeText}</span></td>
-        <td>${r.best_level || '—'}</td>
+        <td>${trail}</td>
       </tr>`;
     }).join('');
   } catch (e) {
