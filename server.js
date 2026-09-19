@@ -199,9 +199,23 @@ async function getCandlesFor(instrument, timeframe = '1h') {
 }
 
 // Multi-strategy engine (signals.js, ported from BOTS/universal.py).
+// Cached per instrument and refreshed once per poll cycle (below), instead
+// of recomputed on every request — so /api/insights and /api/history always
+// serve a consistent, already-known-good result instantly, and a visitor in
+// demo/test mode isn't dependent on a live recompute succeeding at the exact
+// moment they check (a transient upstream hiccup no longer means "no data").
+let insightCache = {};
 async function computeSignal(instrument) {
   const candles = await getCandlesFor(instrument);
   return runEngine(candles);
+}
+async function getCachedInsight(instrument) {
+  if (insightCache[instrument]) return insightCache[instrument];
+  // Cold start (no poll has run yet) — compute once and cache it so the
+  // very first request isn't left with nothing either.
+  const result = await computeSignal(instrument);
+  insightCache[instrument] = result;
+  return result;
 }
 
 // Walks every candle since a signal fired and asks, authoritatively, "what
@@ -258,7 +272,7 @@ function resolveSignalFromCandles(sig, candles) {
 async function trackSignals() {
   for (const key of ALL_KEYS) {
     let result;
-    try { result = await computeSignal(key); } catch (e) { continue; }
+    try { result = await computeSignal(key); insightCache[key] = result; } catch (e) { continue; }
 
     const openForKey = (await store.getOpenSignals()).filter(s => s.instrument === key);
     if (openForKey.length) {
@@ -462,7 +476,7 @@ app.get('/api/insights', async (req, res) => {
 
   const signals = [];
   for (const key of ALL_KEYS) {
-    const s = await computeSignal(key);
+    const s = await getCachedInsight(key);
     signals.push({ key, label: LABELS[key], ...s });
   }
 
@@ -537,7 +551,7 @@ app.get('/api/history', async (req, res) => {
   if (premium && closes.length) {
     payload.ema8 = emaSeries(closes, EMA_FAST_PERIOD);
     payload.ema21 = emaSeries(closes, EMA_SLOW_PERIOD);
-    payload.insight = runEngine(engineCandles);
+    payload.insight = { ...(await getCachedInsight(key)) };
     payload.insight.engineTimeframe = '1h'; // so the UI can label it even when displaying a different timeframe
   }
 
