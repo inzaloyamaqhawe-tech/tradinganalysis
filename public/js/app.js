@@ -156,6 +156,78 @@ async function loadPrices() {
 loadPrices();
 setInterval(loadPrices, 30000);
 
+// ---------- Live crypto ticks via Binance's free public WebSocket ----------
+// Binance is crypto-only (no FX/gold) — GBP/EUR/JPY/XAU still come from the
+// 30s poll above (Frankfurter/gold-api/Twelve Data via our own server,
+// untouched). This is purely an additive, faster-moving layer for the 10
+// crypto cards so the dashboard visibly ticks instead of just refreshing a
+// static number every 30 seconds.
+const BINANCE_SYMBOL = {
+  BTC_USDT: 'btcusdt', ETH_USDT: 'ethusdt', SOL_USDT: 'solusdt', XRP_USDT: 'xrpusdt',
+  DOGE_USDT: 'dogeusdt', ADA_USDT: 'adausdt', AVAX_USDT: 'avaxusdt', LINK_USDT: 'linkusdt',
+  DOT_USDT: 'dotusdt', LTC_USDT: 'ltcusdt',
+};
+const BINANCE_TO_KEY = Object.fromEntries(Object.entries(BINANCE_SYMBOL).map(([key, sym]) => [sym.toUpperCase(), key]));
+
+function setLiveBadge(connected) {
+  document.getElementById('liveBadge')?.classList.toggle('connected', connected);
+}
+
+function updateCardLive(key, price, changePct) {
+  const card = priceGrid.querySelector(`.card[data-key="${key}"]`);
+  if (!card || price == null || !isFinite(price)) return;
+  const priceEl = card.querySelector('.price');
+  const chgEl = card.querySelector('.chg');
+  const prevText = priceEl.textContent;
+  const nextText = fmtPrice(price);
+  if (prevText === nextText) return; // no visible change — skip the animation churn
+
+  const wentUp = parseFloat(nextText.replace(/,/g, '')) >= parseFloat((prevText || '0').replace(/,/g, ''));
+  priceEl.textContent = nextText;
+  if (isFinite(changePct)) {
+    const cls = changePct > 0.001 ? 'up' : changePct < -0.001 ? 'down' : 'flat';
+    const arrow = changePct > 0.001 ? '▲' : changePct < -0.001 ? '▼' : '·';
+    chgEl.className = `chg ${cls}`;
+    chgEl.textContent = `${arrow} ${Math.abs(changePct).toFixed(2)}%`;
+  }
+
+  // Keep the cached snapshot (used by the symbol ribbon + chart side panel) in sync too.
+  const asset = lastPricesData?.assets.find(a => a.key === key);
+  if (asset) { asset.price = price; asset.changePct = changePct; }
+
+  priceEl.classList.remove('flash-up', 'flash-down');
+  void priceEl.offsetWidth; // restart the CSS transition
+  priceEl.classList.add(wentUp ? 'flash-up' : 'flash-down');
+  card.classList.remove('ticked'); void card.offsetWidth; card.classList.add('ticked');
+  setTimeout(() => priceEl.classList.remove('flash-up', 'flash-down'), 50);
+}
+
+let binanceWs = null;
+let binanceReconnectDelay = 1000;
+function connectBinanceLive() {
+  const streams = Object.values(BINANCE_SYMBOL).map(s => `${s}@ticker`).join('/');
+  try { binanceWs = new WebSocket(`wss://stream.binance.com:9443/stream?streams=${streams}`); }
+  catch (e) { scheduleReconnect(); return; }
+
+  binanceWs.addEventListener('open', () => { binanceReconnectDelay = 1000; setLiveBadge(true); });
+  binanceWs.addEventListener('message', (event) => {
+    try {
+      const msg = JSON.parse(event.data);
+      const d = msg?.data;
+      const key = d && BINANCE_TO_KEY[d.s];
+      if (!key) return;
+      updateCardLive(key, parseFloat(d.c), parseFloat(d.P));
+    } catch (e) { /* one bad frame shouldn't kill the feed */ }
+  });
+  binanceWs.addEventListener('close', () => { setLiveBadge(false); scheduleReconnect(); });
+  binanceWs.addEventListener('error', () => { binanceWs.close(); });
+}
+function scheduleReconnect() {
+  setTimeout(connectBinanceLive, binanceReconnectDelay);
+  binanceReconnectDelay = Math.min(binanceReconnectDelay * 1.6, 20000);
+}
+connectBinanceLive();
+
 // ---------- Remember the visitor's email so card clicks know if they're premium ----------
 function rememberEmail(email) { try { localStorage.setItem('ta_email', email); } catch (e) {} }
 function knownEmail() { try { return localStorage.getItem('ta_email') || ''; } catch (e) { return ''; } }

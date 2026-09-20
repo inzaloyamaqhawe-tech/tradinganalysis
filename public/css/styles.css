@@ -114,6 +114,23 @@ img { max-width: 100%; }
 .card:hover .label .hint { opacity: .7; }
 .card .price { font-size: 1.35rem; font-weight: 700; margin-top: 8px; font-variant-numeric: tabular-nums; }
 .card .chg { font-size: .85rem; margin-top: 3px; font-weight: 600; }
+
+/* ---------- Live ticker feed (Binance WS) ---------- */
+.live-badge {
+  display: inline-flex; align-items: center; gap: 5px; font-size: .68rem; font-weight: 800;
+  letter-spacing: .06em; color: var(--muted); border: 1px solid var(--border); border-radius: 999px;
+  padding: 3px 9px; margin-left: 8px; vertical-align: middle; transition: color .2s ease, border-color .2s ease;
+}
+.live-badge.connected { color: var(--up); border-color: rgba(47,212,128,.4); }
+.live-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); flex: none; }
+.live-badge.connected .live-dot { background: var(--up); animation: livePing 1.4s ease-in-out infinite; }
+@keyframes livePing { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: .4; transform: scale(1.5); } }
+
+@keyframes cardTick { 0% { transform: scale(1.035); } 100% { transform: scale(1); } }
+.card.ticked { animation: cardTick .35s ease; }
+.card .price { transition: color .9s ease; }
+.card .price.flash-up { color: var(--up); transition: color 0s; }
+.card .price.flash-down { color: var(--down); transition: color 0s; }
 .up { color: var(--up); } .down { color: var(--down); } .flat { color: var(--muted); }
 
 /* ---------- Chart modal ---------- */

@@ -106,7 +106,11 @@ async function pollForex() {
     try {
       let price;
       if (fx.kind === 'metal') {
-        const res = await fetch('https://api.gold-api.com/price/XAU');
+        // Works fine unauthenticated too — the key just gives more headroom
+        // if gold-api.com ever rate-limits anonymous requests.
+        const res = await fetch('https://api.gold-api.com/price/XAU', {
+          headers: process.env.GOLD_API_KEY ? { 'x-api-key': process.env.GOLD_API_KEY } : {},
+        });
         const json = await res.json();
         price = json?.price;
       } else {
