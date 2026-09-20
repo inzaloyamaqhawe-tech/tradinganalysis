@@ -2,9 +2,10 @@ const express = require('express');
 const cors = require('cors');
 const crypto = require('crypto');
 const { createMemoryStorage, createPgStorage } = require('./storage');
-const { runEngine, buildSyntheticCandles, emaSeries, EMA_FAST_PERIOD, EMA_SLOW_PERIOD } = require('./signals');
+const { runEngine, buildSyntheticCandles, emaSeries, EMA_FAST_PERIOD, EMA_SLOW_PERIOD, PATTERN_LABEL } = require('./signals');
 const { sendMail } = require('./mailer');
 const twelveData = require('./twelvedata');
+const { detectPatterns } = require('./patterns');
 
 const app = express();
 app.use(cors());
@@ -553,6 +554,10 @@ app.get('/api/history', async (req, res) => {
     payload.ema21 = emaSeries(closes, EMA_SLOW_PERIOD);
     payload.insight = { ...(await getCachedInsight(key)) };
     payload.insight.engineTimeframe = '1h'; // so the UI can label it even when displaying a different timeframe
+    // Detected on whatever timeframe is actually being displayed (not the
+    // fixed 1h engine data) so the overlay's points line up with the chart
+    // the user is looking at — visual "prove it" layer, not a new signal.
+    payload.patterns = detectPatterns(displayCandles).map(p => ({ ...p, label: PATTERN_LABEL[p.name] }));
   }
 
   res.json(payload);

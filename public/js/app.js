@@ -179,7 +179,7 @@ let objects = [];        // drawn shapes: { tool, x1,y1,x2,y2 }
 let liveObj = null;      // the shape currently being dragged
 let priceScale = { min: 0, max: 1, h: 0 }; // set by renderChart, reused to label drawn levels
 let currentChartKey = null;
-let showEma8 = true, showEma21 = true;
+let showEma8 = true, showEma21 = true, showPatterns = true;
 
 function resizeCanvases() {
   const wrap = chartCanvas.parentElement;
@@ -272,6 +272,30 @@ function renderChart() {
     };
     drawLevel(levels.sl, '#ff5d6c', 'SL');
     drawLevel(levels.tp4, '#2fd480', 'TP4');
+  }
+
+  // Detected classic chart patterns — drawn on the engine layer (not the
+  // user drawing layer) since these are the algorithm's own read, offered so
+  // a premium user can visually sanity-check it against what they see.
+  const patterns = chartState.patterns;
+  if (patterns && patterns.length && showPatterns) {
+    const n = candles.length;
+    const xFor = (index) => (index / (n - 1 || 1)) * w;
+    patterns.forEach((p) => {
+      const color = p.confirmed ? '#7ad1ff' : '#c98bff';
+      chartCtx.strokeStyle = color; chartCtx.fillStyle = color; chartCtx.lineWidth = 1.5;
+      chartCtx.setLineDash(p.confirmed ? [] : [5, 4]);
+      chartCtx.beginPath();
+      p.points.forEach((pt, i) => {
+        const x = xFor(pt.index), y = priceToY(pt.price, min, max, h);
+        i === 0 ? chartCtx.moveTo(x, y) : chartCtx.lineTo(x, y);
+      });
+      chartCtx.stroke();
+      chartCtx.setLineDash([]);
+      const last = p.points.at(-1);
+      chartCtx.font = '10px sans-serif';
+      chartCtx.fillText(`${p.label}${p.confirmed ? '' : ' (forming)'}`, xFor(last.index) + 4, priceToY(last.price, min, max, h) - 6);
+    });
   }
 }
 
@@ -406,6 +430,7 @@ document.querySelectorAll('[data-type]').forEach(btn => btn.addEventListener('cl
 
 document.getElementById('toggleEma8').addEventListener('change', (e) => { showEma8 = e.target.checked; if (chartState) renderChart(); });
 document.getElementById('toggleEma21').addEventListener('change', (e) => { showEma21 = e.target.checked; if (chartState) renderChart(); });
+document.getElementById('togglePatterns').addEventListener('change', (e) => { showPatterns = e.target.checked; if (chartState) renderChart(); });
 
 function renderSymbolRibbon() {
   const ribbon = document.getElementById('symbolRibbon');
@@ -476,7 +501,7 @@ async function loadChartData(key) {
   try {
     const res = await fetch(`/api/history?key=${encodeURIComponent(key)}&timeframe=${encodeURIComponent(currentTimeframe)}${email ? `&email=${encodeURIComponent(email)}` : ''}`, { headers: authHeaders() });
     const data = await res.json();
-    chartState = { candles: data.candles || [], closes: data.closes || [], ema8: data.ema8, ema21: data.ema21, levels: data.insight?.levels };
+    chartState = { candles: data.candles || [], closes: data.closes || [], ema8: data.ema8, ema21: data.ema21, levels: data.insight?.levels, patterns: data.patterns || [] };
     updateSidePanel(key, data);
     resizeCanvases();
 
@@ -488,8 +513,11 @@ async function loadChartData(key) {
       const legend = document.getElementById('chartLegend');
       const insight = data.insight;
       const sigColor = insight?.signal === 'BUY' ? '#2fd480' : insight?.signal === 'SELL' ? '#ff5d6c' : '#8b98ad';
+      const patternNames = (data.patterns || []).map(p => `${p.label}${p.confirmed ? '' : ' (forming)'}`);
+      const patternTxt = patternNames.length ? ` &nbsp;·&nbsp; <span style="color:#7ad1ff;">Detected: ${patternNames.join(', ')}</span>` : '';
       legend.innerHTML = `<span style="color:#f2b84b;">■</span> EMA8 &nbsp; <span style="color:#ff5d6c;">■</span> EMA21` +
-        (insight ? ` &nbsp;·&nbsp; <strong style="color:${sigColor};">${BIAS_LABEL[insight.signal]}</strong>${insight.confidence != null ? ` (${insight.confidence}/100)` : ''}${insight.strategy ? ` · ${insight.strategy}` : ''} <span class="note" style="margin:0;">(engine reads 1h structure regardless of chart view)</span>` : '');
+        (insight ? ` &nbsp;·&nbsp; <strong style="color:${sigColor};">${BIAS_LABEL[insight.signal]}</strong>${insight.confidence != null ? ` (${insight.confidence}/100)` : ''}${insight.strategy ? ` · ${insight.strategy}` : ''} <span class="note" style="margin:0;">(engine reads 1h structure regardless of chart view)</span>` : '') +
+        patternTxt;
     } else {
       enableDrawing(false);
       document.getElementById('chartLockedNote').style.display = 'block';

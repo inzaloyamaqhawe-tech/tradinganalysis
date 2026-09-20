@@ -5,6 +5,8 @@
 // don't go stale as an instrument's price level moves — see universal.py's
 // module docstring for the full rationale.
 
+const { detectPatterns } = require('./patterns');
+
 const ATR_PERIOD = 14;
 const ATR_BASELINE_PERIOD = 40;
 const ATR_BREAKOUT_RATIO = 1.6;
@@ -125,25 +127,32 @@ function signalMeanReversion(closed, atrNow, bandBars = MEAN_REVERSION_BAND_BARS
 }
 
 // Regime-driven meta-selection: only the strategy/strategies suited to the
-// current regime are evaluated, in priority order.
-function selectSignal(closed, regime, atrNow, atrBaseline) {
+// current regime are evaluated, in priority order. PATTERN is a peer
+// strategy alongside CRT/TREND/BRK/MREV, but only steps in as a fallback
+// when none of those already fired — a confirmed classic chart pattern
+// (double top/bottom, head & shoulders, triangle, wedge, flag) fills the
+// gap rather than competing with or overriding an established trigger.
+function selectSignal(closed, regime, atrNow, atrBaseline, patterns) {
   if (regime === 'QUIET' || regime === 'NO_DATA') return { strategy: null, signal: null };
 
   if (regime === 'VOLATILE_BREAKOUT') {
     const sig = signalBreakout(closed, atrNow, atrBaseline);
-    return sig ? { strategy: 'BRK', signal: sig } : { strategy: null, signal: null };
-  }
-  if (regime === 'TRENDING_UP' || regime === 'TRENDING_DOWN') {
+    if (sig) return { strategy: 'BRK', signal: sig };
+  } else if (regime === 'TRENDING_UP' || regime === 'TRENDING_DOWN') {
     let sig = signalTrend(closed, atrNow, regime);
     if (sig) return { strategy: 'TREND', signal: sig };
     sig = signalCrt(closed, atrNow);
-    return sig ? { strategy: 'CRT', signal: sig } : { strategy: null, signal: null };
-  }
-  if (regime === 'RANGING') {
+    if (sig) return { strategy: 'CRT', signal: sig };
+  } else if (regime === 'RANGING') {
     let sig = signalCrt(closed, atrNow);
     if (sig) return { strategy: 'CRT', signal: sig };
     sig = signalMeanReversion(closed, atrNow);
-    return sig ? { strategy: 'MREV', signal: sig } : { strategy: null, signal: null };
+    if (sig) return { strategy: 'MREV', signal: sig };
+  }
+
+  const confirmedPattern = (patterns || []).find(p => p.confirmed);
+  if (confirmedPattern) {
+    return { strategy: 'PATTERN', signal: { side: confirmedPattern.direction }, patternMeta: confirmedPattern };
   }
   return { strategy: null, signal: null };
 }
@@ -153,6 +162,15 @@ const STRATEGY_LABEL = {
   TREND: 'Trend-pullback continuation',
   BRK: 'Volatility breakout',
   MREV: 'Range mean-reversion',
+  PATTERN: 'Classic chart pattern',
+};
+
+const PATTERN_LABEL = {
+  DOUBLE_TOP: 'Double Top', DOUBLE_BOTTOM: 'Double Bottom',
+  HEAD_AND_SHOULDERS: 'Head & Shoulders', INVERSE_HEAD_AND_SHOULDERS: 'Inverse Head & Shoulders',
+  ASCENDING_TRIANGLE: 'Ascending Triangle', DESCENDING_TRIANGLE: 'Descending Triangle', SYMMETRICAL_TRIANGLE: 'Symmetrical Triangle',
+  RISING_WEDGE: 'Rising Wedge', FALLING_WEDGE: 'Falling Wedge',
+  BULL_FLAG: 'Bullish Flag', BEAR_FLAG: 'Bearish Flag',
 };
 
 // SL distance in units of ATR, per strategy — same relative tightness as
@@ -164,7 +182,7 @@ const STRATEGY_LABEL = {
 // stays ATR-relative, so it self-scales per asset instead of using a fixed
 // dollar/pip distance — a $0.07 DOGE move and a $4000 XAU move both get a
 // stop sized to *that instrument's own* recent volatility.
-const STRATEGY_SL_ATR = { CRT: 1.0, TREND: 1.2, BRK: 1.5, MREV: 1.0 };
+const STRATEGY_SL_ATR = { CRT: 1.0, TREND: 1.2, BRK: 1.5, MREV: 1.0, PATTERN: 1.3 };
 const RISK_REWARD_TO_TP4 = 2; // 1 : 2
 
 function decimalsFor(price) {
@@ -179,16 +197,31 @@ function round(price) {
 }
 
 // Ladders SL and TP1-TP4 off the last close, sized to this strategy's ATR
-// multiple. TP4 is the 1:2 target; TP1-TP3 are evenly spaced checkpoints
-// toward it (0.5R / 1.0R / 1.5R / 2.0R) so a premium user can bank partial
-// profit on the way instead of an all-or-nothing single target.
-function computeLevels(entry, side, atrNow, strategy) {
+// multiple. TP4 is normally the 1:2 target, with TP1-TP3 evenly spaced
+// checkpoints toward it (0.5R / 1.0R / 1.5R / 2.0R) so a premium user can
+// bank partial profit on the way instead of an all-or-nothing single target.
+//
+// When `explicitTarget` is given (a PATTERN-strategy signal), TP4 is instead
+// the pattern's own measured-move target from the reference guide — SL stays
+// ATR-based as always, but TP1-3 become fractions of the entry-to-target
+// distance (25/50/75%) since that distance no longer relates cleanly to R.
+// The reported risk:reward is whatever ratio that target actually works out
+// to, not a forced 1:2.
+function computeLevels(entry, side, atrNow, strategy, explicitTarget) {
   const slMult = STRATEGY_SL_ATR[strategy] ?? 1.0;
   const slDist = slMult * atrNow;
   const dir = side === 'BUY' ? 1 : -1;
+  const sl = round(entry - dir * slDist);
+
+  if (explicitTarget != null) {
+    const targetDist = Math.abs(explicitTarget - entry);
+    const [tp1, tp2, tp3, tp4] = [0.25, 0.5, 0.75, 1.0].map(f => round(entry + dir * f * targetDist));
+    const ratio = slDist > 0 ? targetDist / slDist : null;
+    return { entry: round(entry), sl, tp1, tp2, tp3, tp4, riskReward: ratio != null ? `1:${ratio.toFixed(1)}` : 'n/a' };
+  }
   const rMultiples = [0.5, 1.0, 1.5, RISK_REWARD_TO_TP4];
   const [tp1, tp2, tp3, tp4] = rMultiples.map(r => round(entry + dir * r * slDist));
-  return { entry: round(entry), sl: round(entry - dir * slDist), tp1, tp2, tp3, tp4, riskReward: `1:${RISK_REWARD_TO_TP4}` };
+  return { entry: round(entry), sl, tp1, tp2, tp3, tp4, riskReward: `1:${RISK_REWARD_TO_TP4}` };
 }
 
 // A rough 0-100 "setup strength" — how cleanly the regime conditions were
@@ -218,28 +251,54 @@ function computeConfidence(strategy, regime, closed, atrNow, atrBaseline) {
 function runEngine(closed) {
   const { regime, atrNow, atrBaseline } = classifyRegime(closed);
   if (regime === 'NO_DATA') {
-    return { signal: 'HOLD', regime, strategy: null, confidence: null, note: 'Gathering data — check back soon for a clearer read.' };
+    return { signal: 'HOLD', regime, strategy: null, confidence: null, note: 'Gathering data — check back soon for a clearer read.', patterns: [] };
   }
-  const { strategy, signal } = selectSignal(closed, regime, atrNow, atrBaseline);
+
+  const patterns = detectPatterns(closed);
+  const { strategy, signal, patternMeta } = selectSignal(closed, regime, atrNow, atrBaseline, patterns);
+
   if (!signal) {
+    // No strategy fired at all — still worth mentioning a pattern that's
+    // visibly forming but hasn't confirmed a breakout yet (context, not a call).
+    const forming = patterns.find(p => !p.confirmed);
+    const formingNote = forming ? ` A ${PATTERN_LABEL[forming.name]} appears to be forming — not yet confirmed.` : '';
     return {
       signal: 'HOLD',
       regime,
       strategy: null,
       confidence: null,
-      note: `Structure: ${regime.replace('_', ' ').toLowerCase()} — no clear directional setup right now. Informational only; conduct your own analysis before trading.`,
+      note: `Structure: ${regime.replace('_', ' ').toLowerCase()} — no clear directional setup right now.${formingNote} Informational only; conduct your own analysis before trading.`,
+      patterns,
     };
   }
-  const levels = computeLevels(closed.at(-1).close, signal.side, atrNow, strategy);
-  const confidence = computeConfidence(strategy, regime, closed, atrNow, atrBaseline);
+
+  const explicitTarget = strategy === 'PATTERN' ? patternMeta.target : null;
+  const levels = computeLevels(closed.at(-1).close, signal.side, atrNow, strategy, explicitTarget);
+  let confidence = strategy === 'PATTERN' ? 70 : computeConfidence(strategy, regime, closed, atrNow, atrBaseline);
+
+  // Confluence: an independently-detected pattern agreeing with the fired
+  // strategy's direction is corroborating evidence — bump confidence rather
+  // than create a second signal. A confirmed (broken-out) pattern counts for
+  // more than one still just forming.
+  let confluenceNote = '';
+  const agreeing = patterns.find(p => p.direction === signal.side && p !== patternMeta);
+  if (agreeing) {
+    confidence = Math.min(95, confidence + (agreeing.confirmed ? 15 : 8));
+    confluenceNote = ` Reinforced by a visible ${PATTERN_LABEL[agreeing.name]}${agreeing.confirmed ? '' : ' (still forming)'}.`;
+  }
+
   const biasWord = signal.side === 'BUY' ? 'bullish' : 'bearish';
+  const subject = strategy === 'PATTERN'
+    ? `${PATTERN_LABEL[patternMeta.name]} (measured-move target ${round(patternMeta.target)})`
+    : STRATEGY_LABEL[strategy];
   return {
     signal: signal.side,
     regime,
     strategy,
     confidence,
     levels,
-    note: `${STRATEGY_LABEL[strategy]} suggests a ${biasWord} scenario in a ${regime.replace('_', ' ').toLowerCase()} structure (setup strength ${confidence}/100). Informational only — conduct your own analysis and risk assessment before making any trading decision.`,
+    note: `${subject} suggests a ${biasWord} scenario in a ${regime.replace('_', ' ').toLowerCase()} structure (setup strength ${confidence}/100).${confluenceNote} Informational only — conduct your own analysis and risk assessment before making any trading decision.`,
+    patterns,
   };
 }
 
@@ -267,4 +326,4 @@ function buildSyntheticCandles(ticksChronological, bucketSize = 6) {
   return candles;
 }
 
-module.exports = { runEngine, buildSyntheticCandles, emaSeries, EMA_FAST_PERIOD, EMA_SLOW_PERIOD };
+module.exports = { runEngine, buildSyntheticCandles, emaSeries, EMA_FAST_PERIOD, EMA_SLOW_PERIOD, PATTERN_LABEL };
