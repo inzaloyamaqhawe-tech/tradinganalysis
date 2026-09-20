@@ -563,7 +563,10 @@ function renderTimeframeGroup() {
   host.querySelectorAll('[data-tf]').forEach(btn => btn.addEventListener('click', () => {
     currentTimeframe = btn.dataset.tf;
     host.querySelectorAll('[data-tf]').forEach(b => b.classList.toggle('active', b.dataset.tf === currentTimeframe));
-    if (currentChartKey) loadChartData(currentChartKey);
+    if (currentChartKey) {
+      loadChartData(currentChartKey);
+      connectChartLive(currentChartKey, currentTimeframe);
+    }
   }));
 }
 
@@ -577,7 +580,11 @@ async function loadChartData(key) {
     updateSidePanel(key, data);
     resizeCanvases();
 
-    const rangeTxt = data.high != null ? `Range (${currentTimeframe}, tracked window): ${data.low} – ${data.high}` : `No candles yet at ${currentTimeframe} — try 1h, or add a Twelve Data key for full FX timeframe coverage.`;
+    const isLiveCapable = !!(BINANCE_SYMBOL[key] && BINANCE_KLINE_INTERVAL[currentTimeframe]);
+    const liveTag = isLiveCapable ? ' 🔴 live candle' : '';
+    const rangeTxt = data.high != null
+      ? `Range (${currentTimeframe}, tracked window): ${data.low} – ${data.high}${liveTag}`
+      : `No candles yet at ${currentTimeframe} — try 1h, or add a Twelve Data key for full FX timeframe coverage.`;
     document.getElementById('chartSub').textContent = rangeTxt;
 
     if (data.premium) {
@@ -599,6 +606,52 @@ async function loadChartData(key) {
   }
 }
 
+// ---------- Live candle feed for the open chart (Binance kline WS) ----------
+// Same trick the old CRT dashboard used: a kline stream carries the whole
+// currently-forming candle on every tick, plus a `closed` flag. Same
+// timestamp as our last stored candle → the bar is still forming, replace it
+// in place; a genuinely new timestamp once closed → push a new bar. History
+// never moves; only the live edge does. Crypto only — Binance has no FX/gold,
+// so those charts stay on the periodic /api/history refresh as before.
+const BINANCE_KLINE_INTERVAL = { '1m': '1m', '5m': '5m', '15m': '15m', '30m': '30m', '1h': '1h', '4h': '4h', '1D': '1d', '1W': '1w', '1M': '1M' };
+let chartKlineWs = null;
+
+function disconnectChartLive() {
+  if (chartKlineWs) { try { chartKlineWs.close(); } catch (e) {} chartKlineWs = null; }
+}
+
+function connectChartLive(key, timeframe) {
+  disconnectChartLive();
+  const symbol = BINANCE_SYMBOL[key];
+  const interval = BINANCE_KLINE_INTERVAL[timeframe];
+  if (!symbol || !interval) return; // FX/gold, or a timeframe Binance doesn't expose — no live edge, static chart only
+
+  try { chartKlineWs = new WebSocket(`wss://stream.binance.com:9443/ws/${symbol}@kline_${interval}`); }
+  catch (e) { return; }
+
+  chartKlineWs.addEventListener('message', (event) => {
+    if (!chartState || currentChartKey !== key || currentTimeframe !== timeframe) return; // stale connection from a since-switched view
+    try {
+      const k = JSON.parse(event.data)?.k;
+      if (!k) return;
+      const candle = { open: parseFloat(k.o), high: parseFloat(k.h), low: parseFloat(k.l), close: parseFloat(k.c), time: k.t };
+      const candles = chartState.candles;
+      const last = candles[candles.length - 1];
+      if (last && last.time === candle.time) {
+        candles[candles.length - 1] = candle;
+      } else if (k.x) {
+        candles.push(candle);
+        if (candles.length > 300) candles.shift();
+      } else {
+        candles[candles.length - 1] = candle;
+      }
+      chartState.closes = candles.map(c => c.close);
+      renderChart();
+    } catch (e) { /* one bad frame shouldn't kill the live edge */ }
+  });
+  chartKlineWs.addEventListener('error', () => { try { chartKlineWs.close(); } catch (e) {} });
+}
+
 async function openChart(key, label) {
   currentChartKey = key;
   currentTimeframe = '1h';
@@ -615,11 +668,12 @@ async function openChart(key, label) {
   renderSymbolRibbon();
   resizeCanvases();
   await loadChartData(key);
+  connectChartLive(key, currentTimeframe);
 }
 
-document.getElementById('chartClose').addEventListener('click', () => chartModal.classList.remove('open'));
-chartModal.addEventListener('click', (e) => { if (e.target === chartModal) chartModal.classList.remove('open'); });
-document.getElementById('chartPricingLink')?.addEventListener('click', () => chartModal.classList.remove('open'));
+document.getElementById('chartClose').addEventListener('click', () => { chartModal.classList.remove('open'); disconnectChartLive(); });
+chartModal.addEventListener('click', (e) => { if (e.target === chartModal) { chartModal.classList.remove('open'); disconnectChartLive(); } });
+document.getElementById('chartPricingLink')?.addEventListener('click', () => { chartModal.classList.remove('open'); disconnectChartLive(); });
 
 // ---------- Auth: one account, used everywhere instead of retyping email ----------
 let authToken = null;
