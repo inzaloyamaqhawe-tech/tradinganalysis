@@ -272,10 +272,16 @@ function resolveSignalFromCandles(sig, candles) {
 
   const bestLevel = ['TP4', 'TP3', 'TP2', 'TP1'].find(l => seen.has(l)) || sig.best_level || null;
   const status = seen.has('TP4') ? 'closed' : slHitAt ? 'closed' : 'open';
-  const outcome = seen.has('TP4') ? 'TP4' : slHitAt ? 'SL' : null;
+  // Never disguise a reached target as an outright loss: once any TP has
+  // actually printed, the worst honest outcome is "reached <bestLevel>, then
+  // gave back the remainder" — not a full SL loss. Only a stop-out with zero
+  // TPs touched at all is recorded as 'SL'. `slTouched` is tracked separately
+  // (regardless of how the outcome reads) so alerts still fire on the actual
+  // stop-loss touch either way.
+  const outcome = seen.has('TP4') ? 'TP4' : slHitAt ? (bestLevel || 'SL') : null;
   const closedAt = seen.has('TP4') ? (hitHistory.find(h => h.level === 'TP4')?.time ?? Date.now()) : slHitAt;
 
-  return { hitHistory, bestLevel, status, outcome, closedAt: closedAt ? new Date(closedAt).toISOString() : null };
+  return { hitHistory, bestLevel, status, outcome, slTouched: !!slHitAt, closedAt: closedAt ? new Date(closedAt).toISOString() : null };
 }
 
 // ---- Alerts (Pro+ only, per spec): new high-confidence signal, and TP/SL
@@ -328,7 +334,7 @@ async function trackSignals() {
 
         const alertedLevels = new Set(sig.alerted_levels || []);
         const newlyHitLevels = resolved.hitHistory.map(h => h.level).filter(l => !alertedLevels.has(l));
-        const newlyHitSL = resolved.status === 'closed' && resolved.outcome === 'SL' && !alertedLevels.has('SL');
+        const newlyHitSL = resolved.slTouched && !alertedLevels.has('SL');
         const touchLabels = [...newlyHitLevels, ...(newlyHitSL ? ['SL'] : [])];
         if (touchLabels.length) {
           await alertLevelTouch(sig, touchLabels);
@@ -359,9 +365,32 @@ async function trackSignals() {
   }
 }
 
+// A reached target (TP1-TP4) is a win even if the position later gave back
+// the remainder and stopped out — resolveSignalFromCandles never labels
+// those cases 'SL', but this set is the single place that decides what
+// counts as a win everywhere stats get computed, so the two can't drift.
+const WIN_OUTCOMES = new Set(['TP1', 'TP2', 'TP3', 'TP4']);
+
+// How long a setup took to reach its logged result. For a win, that's the
+// time the *best* level actually printed (from hit_history) — not
+// closed_at, which for a TP-then-SL case is later, when the remainder
+// stopped out. For a straight SL loss or an invalidated setup, closed_at
+// is the only timestamp there is, so that's the duration.
+function resolvedInMs(row) {
+  if (row.status !== 'closed' || !row.created_at) return null;
+  const start = new Date(row.created_at).getTime();
+  if (WIN_OUTCOMES.has(row.outcome)) {
+    const hit = (row.hit_history || []).find(h => h.level === row.outcome);
+    const end = hit ? new Date(hit.time).getTime() : (row.closed_at ? new Date(row.closed_at).getTime() : null);
+    return end != null ? Math.max(0, end - start) : null;
+  }
+  if (!row.closed_at) return null;
+  return Math.max(0, new Date(row.closed_at).getTime() - start);
+}
+
 function computePerformanceStats(rows) {
   const closed = rows.filter(r => r.status === 'closed');
-  const wins = closed.filter(r => r.outcome === 'TP4').length;
+  const wins = closed.filter(r => WIN_OUTCOMES.has(r.outcome)).length;
   const losses = closed.filter(r => r.outcome === 'SL').length;
   const invalidated = closed.filter(r => r.outcome === 'INVALIDATED').length;
   const open = rows.filter(r => r.status === 'open').length;
@@ -370,9 +399,9 @@ function computePerformanceStats(rows) {
 
   const byInstrument = {};
   for (const r of closed) {
-    if (r.outcome !== 'TP4' && r.outcome !== 'SL') continue;
+    if (!WIN_OUTCOMES.has(r.outcome) && r.outcome !== 'SL') continue;
     byInstrument[r.instrument] = byInstrument[r.instrument] || { wins: 0, losses: 0 };
-    byInstrument[r.instrument][r.outcome === 'TP4' ? 'wins' : 'losses']++;
+    byInstrument[r.instrument][WIN_OUTCOMES.has(r.outcome) ? 'wins' : 'losses']++;
   }
   return { total: rows.length, open, wins, losses, invalidated, winRate, byInstrument };
 }
@@ -627,7 +656,7 @@ app.get('/api/performance', async (req, res) => {
     if (r.status === 'open' && !premium) {
       return { id: r.id, status: 'open', locked: true, created_at: r.created_at };
     }
-    return { ...r, label: LABELS[r.instrument] };
+    return { ...r, label: LABELS[r.instrument], resolved_in_ms: resolvedInMs(r) };
   });
 
   const payload = { stats, recent, premium, plan };

@@ -3,6 +3,24 @@
 // instruction — this is a market-structure read, not a trade instruction.
 const BIAS_LABEL = { BUY: 'BULLISH BIAS', SELL: 'BEARISH BIAS', HOLD: 'NEUTRAL' };
 
+// A reached target (TP1-TP4) is a win even if the position later gave back
+// the remainder and stopped out on the rest — the server never labels those
+// 'SL' (see server.js's resolveSignalFromCandles/WIN_OUTCOMES), so this set
+// keeps the frontend's win/loss styling in sync with that same rule.
+const WIN_OUTCOMES = new Set(['TP1', 'TP2', 'TP3', 'TP4']);
+
+function formatDuration(ms) {
+  if (ms == null) return '—';
+  const mins = Math.round(ms / 60000);
+  if (mins < 60) return `${mins}m`;
+  const hours = Math.floor(mins / 60);
+  const remMins = mins % 60;
+  if (hours < 24) return `${hours}h${remMins ? ` ${remMins}m` : ''}`;
+  const days = Math.floor(hours / 24);
+  const remHours = hours % 24;
+  return `${days}d${remHours ? ` ${remHours}h` : ''}`;
+}
+
 // Standard pip size per instrument, for the Long/Short drag tool's live
 // distance readout. Crypto has no real "pip" convention, so those just show
 // a plain price distance instead of a fabricated pip count.
@@ -58,7 +76,7 @@ async function loadTrackRecord() {
       bestBox.style.display = 'none';
     }
     if (!data.recent.length) {
-      rowsHost.innerHTML = `<tr><td colspan="7" class="note">No setups logged yet — check back once the engine has surfaced a few.</td></tr>`;
+      rowsHost.innerHTML = `<tr><td colspan="8" class="note">No setups logged yet — check back once the engine has surfaced a few.</td></tr>`;
       return;
     }
     rowsHost.innerHTML = data.recent.map(r => {
@@ -68,10 +86,11 @@ async function loadTrackRecord() {
           <td colspan="4" class="note">🔒 Live setup — <a href="#/pricing">subscribe</a> to see which market and bias this is</td>
           <td><span class="outcome-pill open">Open</span></td>
           <td>—</td>
+          <td>—</td>
         </tr>`;
       }
-      const outcomeClass = r.status === 'open' ? 'open' : r.outcome === 'TP4' ? 'win' : r.outcome === 'SL' ? 'loss' : 'invalidated';
-      const outcomeText = r.status === 'open' ? 'Open' : (r.outcome || '—');
+      const outcomeClass = r.status === 'open' ? 'open' : WIN_OUTCOMES.has(r.outcome) ? 'win' : r.outcome === 'SL' ? 'loss' : 'invalidated';
+      const outcomeText = r.status === 'open' ? 'Open' : (r.outcome === 'SL' ? 'SL' : WIN_OUTCOMES.has(r.outcome) ? `${r.outcome} (then gave back remainder)` : (r.outcome || '—'));
       // Trail of TPs actually touched (walked from real candle history), not
       // just the final best level — e.g. "TP1 → TP2" shows partial progress
       // even on a setup that hasn't reached TP4 yet.
@@ -84,10 +103,11 @@ async function loadTrackRecord() {
         <td>${r.confidence != null ? r.confidence + '/100' : '—'}</td>
         <td><span class="outcome-pill ${outcomeClass}">${outcomeText}</span></td>
         <td>${trail}</td>
+        <td>${formatDuration(r.resolved_in_ms)}</td>
       </tr>`;
     }).join('');
   } catch (e) {
-    rowsHost.innerHTML = `<tr><td colspan="7" class="note">Failed to load track record.</td></tr>`;
+    rowsHost.innerHTML = `<tr><td colspan="8" class="note">Failed to load track record.</td></tr>`;
   }
 }
 
