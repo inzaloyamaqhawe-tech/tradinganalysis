@@ -165,6 +165,37 @@ const STRATEGY_LABEL = {
   PATTERN: 'Classic chart pattern',
 };
 
+// Plain-language, non-jargon explanations of *why* a signal appeared — the
+// causal story behind the strategy trigger, for users who don't know what
+// "ATR-relative rejection" means. Kept separate from STRATEGY_LABEL (the
+// technical name) so the UI can show both: the name for credibility, the
+// explanation for understanding.
+function explainSignal(strategy, side, regime, patternMeta) {
+  const dir = side === 'BUY' ? 'up' : 'down';
+  const rangeSide = side === 'BUY' ? 'range low' : 'range high';
+  switch (strategy) {
+    case 'CRT':
+      return `Price pushed beyond the recent ${rangeSide}, then closed back inside the range — a common sign that the move outside was a liquidity grab, not real follow-through, and price is likely to continue ${dir} from here.`;
+    case 'TREND':
+      return `The market has been trending, and price just pulled back and then closed strongly back in the trend's direction — a sign the trend is resuming rather than reversing.`;
+    case 'BRK':
+      return `Price just broke out of a quiet range with a much bigger candle than usual, closing strongly in one direction — a sign of a fresh volatility expansion that can continue ${dir}.`;
+    case 'MREV':
+      return `Price wicked beyond the recent trading range and then rejected back inside it, suggesting the extreme was overextended and a move back toward the middle of the range is likely.`;
+    case 'PATTERN':
+      return `A ${PATTERN_LABEL[patternMeta?.name] || 'chart pattern'} has formed and broken out, which historically tends to continue toward its measured-move target.`;
+    default:
+      return 'No clear setup right now.';
+  }
+}
+
+// What would confirm this setup is working vs. invalidate it — used by both
+// the plain-language explanation and (later) the AI Elite explanation layer.
+function invalidationNote(strategy, side, levels) {
+  const slSide = side === 'BUY' ? 'below' : 'above';
+  return `This idea weakens if price closes back ${slSide} ${levels?.sl ?? 'the stop level'} — that's the invalidation point.`;
+}
+
 const PATTERN_LABEL = {
   DOUBLE_TOP: 'Double Top', DOUBLE_BOTTOM: 'Double Bottom',
   HEAD_AND_SHOULDERS: 'Head & Shoulders', INVERSE_HEAD_AND_SHOULDERS: 'Inverse Head & Shoulders',
@@ -291,12 +322,16 @@ function runEngine(closed) {
   const subject = strategy === 'PATTERN'
     ? `${PATTERN_LABEL[patternMeta.name]} (measured-move target ${round(patternMeta.target)})`
     : STRATEGY_LABEL[strategy];
+  const explanation = explainSignal(strategy, signal.side, regime, patternMeta);
+  const invalidation = invalidationNote(strategy, signal.side, levels);
   return {
     signal: signal.side,
     regime,
     strategy,
     confidence,
     levels,
+    explanation,
+    invalidation,
     note: `${subject} suggests a ${biasWord} scenario in a ${regime.replace('_', ' ').toLowerCase()} structure (setup strength ${confidence}/100).${confluenceNote} Informational only — conduct your own analysis and risk assessment before making any trading decision.`,
     patterns,
   };
@@ -326,4 +361,4 @@ function buildSyntheticCandles(ticksChronological, bucketSize = 6) {
   return candles;
 }
 
-module.exports = { runEngine, buildSyntheticCandles, emaSeries, EMA_FAST_PERIOD, EMA_SLOW_PERIOD, PATTERN_LABEL };
+module.exports = { runEngine, buildSyntheticCandles, emaSeries, EMA_FAST_PERIOD, EMA_SLOW_PERIOD, PATTERN_LABEL, STRATEGY_LABEL, explainSignal, invalidationNote };

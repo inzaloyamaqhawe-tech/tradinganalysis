@@ -42,7 +42,7 @@
         <h1>Data-driven market insight, not hype.</h1>
         <p>We read each market's structure — trending, ranging, breaking out, or quiet — and surface the bias and setup strength for that condition instead of one generic rule for every market. Every insight ships with a full Entry / TP1-TP4 / stop-loss reference ladder at a disciplined 1:2 risk:reward, sized to that asset's own volatility, to help you evaluate potential opportunities.</p>
         <div class="hero-stats">
-          <div class="stat-chip"><div class="n">12</div><div class="l">Markets tracked</div></div>
+          <div class="stat-chip"><div class="n" id="statMarketCount">–</div><div class="l">Markets tracked</div></div>
           <div class="stat-chip"><div class="n" id="statUp">–</div><div class="l">Up right now</div></div>
           <div class="stat-chip"><div class="n">4</div><div class="l">Structure-matched models</div></div>
         </div>
@@ -92,12 +92,46 @@
 
       <div id="lockedBox" class="locked-box" style="display:none;">
         <div class="icon">🔒</div>
-        <p>Subscribe to unlock live market-structure insights for all 12 tracked markets.</p>
+        <p id="lockedMsg">Subscribe to unlock live market-structure insights for all <span id="lockedMarketCount">14</span> tracked markets.</p>
         <button id="goPricingBtn">See Pricing — <span id="lockedPrice">R45/month</span></button>
+      </div>
+
+      <div id="riskGate" class="locked-box" style="display:none;">
+        <div class="icon">⚠️</div>
+        <p>Before viewing premium insights, please confirm you understand: this is informational market-structure analysis, not financial advice, and no outcome is guaranteed. You are responsible for your own trading decisions.</p>
+        <label class="tool-check" style="justify-content:center; margin-bottom:10px;"><input type="checkbox" id="riskAcceptCheck" /> I understand and accept the <a href="#/risk">Risk Disclosure</a></label>
+        <button id="riskAcceptBtn" disabled>Continue to Insights</button>
       </div>
 
       <div id="signalsWrap" style="display:none;">
         <div id="topPickBox"></div>
+
+        <div id="aiEliteBox" class="panel" style="display:none; margin-top:16px;">
+          <div class="eyebrow">🤖 AI Elite — daily market summary</div>
+          <p class="note" id="aiDailySummary">Loading…</p>
+          <div class="row" style="margin-top:8px;">
+            <input type="text" id="aiQuestionInput" placeholder="Ask the AI about a market, e.g. Why is BTC bullish?" />
+            <button id="aiAskBtn">Ask</button>
+          </div>
+          <div class="note" id="aiAnswerBox" style="margin-top:6px;"></div>
+        </div>
+
+        <div id="filterBox" class="panel" style="display:none; margin-top:16px;">
+          <div class="row" style="flex-wrap:wrap; gap:8px;">
+            <label class="note" style="margin:0;">Min confidence
+              <input type="number" id="filterConfidence" min="0" max="100" value="0" style="width:70px;" />
+            </label>
+            <select id="filterStrategy"><option value="">All strategies</option></select>
+            <select id="filterDirection"><option value="">Any direction</option><option value="BUY">Bullish</option><option value="SELL">Bearish</option></select>
+            <label class="tool-check"><input type="checkbox" id="filterFavOnly" /> Favourites only</label>
+          </div>
+        </div>
+
+        <div id="bestMarketsBox" style="display:none; margin-top:20px;">
+          <h3 class="section-title" style="font-size:1rem;">Best-performing markets (real track record)</h3>
+          <div id="bestMarketsList"></div>
+        </div>
+
         <h3 class="section-title" style="margin-top:24px; font-size:1rem;">All tracked markets</h3>
         <div id="signalsList"></div>
       </div>
@@ -115,6 +149,11 @@
 
     <div class="hero-stats" id="trackStats" style="margin-bottom:20px;"></div>
 
+    <div id="trackBestMarketsBox" style="display:none; margin-bottom:20px;">
+      <h3 class="section-title" style="font-size:1rem;">Best-performing markets</h3>
+      <div id="trackBestMarketsList"></div>
+    </div>
+
     <div class="panel">
       <div class="chart-wrap-table" style="overflow-x:auto;">
         <table class="track-table">
@@ -129,7 +168,7 @@
   <!-- PRICING -->
   <section class="view" data-view="pricing">
     <h1>Pricing</h1>
-    <p class="section-sub">One plan. Cancel anytime. Billed in ZAR via PayPal — other currencies shown below for convenience only.</p>
+    <p class="section-sub">Four tiers — pick what fits how you trade. Cancel anytime. Billed in ZAR via PayPal — other currencies shown below for convenience only.</p>
     <div class="row" style="margin-bottom:6px;">
       <label class="note" style="margin:0;">Show price in:</label>
       <select id="currencySelect" class="currency-select" style="max-width:140px; min-width:100px;">
@@ -144,24 +183,12 @@
       </select>
     </div>
 
-    <div class="plan-card">
-      <div class="label" style="color:var(--gold); font-weight:700; letter-spacing:.05em; font-size:.8rem;">PREMIUM INSIGHTS</div>
-      <div class="plan-price" id="planPrice">R45 <span>/ month</span></div>
-      <div class="note" id="altPrice" style="margin-top:-8px;"></div>
-      <ul class="plan-list">
-        <li>Live bias + confidence read on all 12 markets</li>
-        <li>Regime + strategy detail behind every insight</li>
-        <li>Free live prices for everyone, always</li>
-      </ul>
-      <div class="row">
-        <input type="email" id="subEmail" placeholder="you@example.com" />
-      </div>
-      <div class="row" style="margin-top:10px;">
-        <button id="subBtn">Get Access</button>
-        <button class="secondary" id="demoBtn" style="display:none;">🧪 Simulate Payment</button>
-      </div>
-      <div id="subResult" class="note"></div>
+    <div class="row" style="margin-bottom:14px;">
+      <input type="email" id="subEmail" placeholder="you@example.com" />
     </div>
+
+    <div class="plan-grid" id="planGrid"></div>
+    <div id="subResult" class="note" style="margin-top:14px;"></div>
   </section>
 
   <!-- ACCOUNT -->
@@ -262,12 +289,21 @@
         <div class="sp-row good"><span>TP3</span><b id="spTp3">—</b></div>
         <div class="sp-row good"><span>TP4 (1:2)</span><b id="spTp4">—</b></div>
         <div class="sp-row bad"><span>Stop loss</span><b id="spSl">—</b></div>
+        <div id="spExplainBox" style="display:none;">
+          <div class="sp-divider"></div>
+          <div class="sp-title">Why this signal <span class="sp-hint">(plain language)</span></div>
+          <p class="note" id="spExplanation" style="margin:0 0 6px;"></p>
+          <p class="note" id="spInvalidation" style="margin:0;"></p>
+          <button class="ghost" id="spAiExplainBtn" style="display:none; margin-top:8px;">🤖 AI explain this signal</button>
+          <p class="note" id="spAiExplainResult" style="margin-top:6px;"></p>
+        </div>
         <div id="spLockedNote" class="note" style="display:none;">🔒 Subscribe to see the suggested entry, TP1-4 and stop loss for this market. <a href="#/pricing" id="chartPricingLink">See pricing →</a></div>
+        <button class="ghost" id="favToggleBtn" style="display:none; margin-top:10px;">☆ Add to favourites</button>
       </aside>
     </div>
 
     <div id="chartLockedNote" class="note" style="display:none;">
-      🔒 Subscribe to overlay EMA indicators and use the drawing tools (trendline, rectangle, Fibonacci, Long/Short).
+      🔒 Upgrade to Pro Trader Tools to overlay EMA indicators and use the drawing tools (trendline, rectangle, Fibonacci, Long/Short).
     </div>
   </div>
 </div>

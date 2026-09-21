@@ -11,10 +11,10 @@ const path = require('path');
 const HISTORY_LIMIT = 600;
 
 function createMemoryStorage() {
-  const subscribers = new Map(); // email -> { email, status, expires_at, created_at, password_hash }
+  const subscribers = new Map(); // email -> { email, status, plan, expires_at, created_at, password_hash, favourites }
   const history = new Map(); // instrument -> [{ price, polled_at }] most-recent-first
   const sessions = new Map(); // token -> email
-  const signalLog = []; // { id, instrument, strategy, regime, side, entry, sl, tp1-4, confidence, status, outcome, best_level, created_at, closed_at }
+  const signalLog = []; // { id, instrument, strategy, regime, side, entry, sl, tp1-4, confidence, status, outcome, best_level, created_at, closed_at, alerted_new, alerted_levels }
   let signalLogSeq = 1;
 
   // Persist accounts/sessions/signal history to a local JSON file so a
@@ -57,7 +57,7 @@ function createMemoryStorage() {
     async setPassword(email, passwordHash) {
       const existing = subscribers.get(email);
       if (existing) existing.password_hash = passwordHash;
-      else subscribers.set(email, { email, status: 'pending', expires_at: null, created_at: new Date().toISOString(), password_hash: passwordHash });
+      else subscribers.set(email, { email, status: 'pending', plan: null, expires_at: null, created_at: new Date().toISOString(), password_hash: passwordHash, favourites: [] });
       scheduleSave();
     },
 
@@ -66,7 +66,7 @@ function createMemoryStorage() {
     async deleteSession(token) { sessions.delete(token); scheduleSave(); },
 
     async logSignal(rec) {
-      const row = { id: signalLogSeq++, status: 'open', outcome: null, best_level: null, hit_history: [], closed_at: null, created_at: new Date().toISOString(), ...rec };
+      const row = { id: signalLogSeq++, status: 'open', outcome: null, best_level: null, hit_history: [], closed_at: null, alerted_new: false, alerted_levels: [], created_at: new Date().toISOString(), ...rec };
       signalLog.push(row);
       scheduleSave();
       return row;
@@ -105,20 +105,22 @@ function createMemoryStorage() {
 
     async upsertPending(email) {
       if (!subscribers.has(email)) {
-        subscribers.set(email, { email, status: 'pending', expires_at: null, created_at: new Date().toISOString() });
+        subscribers.set(email, { email, status: 'pending', plan: null, expires_at: null, created_at: new Date().toISOString(), favourites: [] });
         scheduleSave();
       }
     },
 
-    async activate(email, days) {
+    async activate(email, days, plan = 'premium') {
       const expires = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
       const existing = subscribers.get(email);
       subscribers.set(email, {
         ...existing,
         email,
         status: 'active',
+        plan,
         expires_at: expires,
         created_at: existing?.created_at || new Date().toISOString(),
+        favourites: existing?.favourites || [],
       });
       scheduleSave();
     },
@@ -130,6 +132,11 @@ function createMemoryStorage() {
 
     async listSubscribers() {
       return [...subscribers.values()].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+    },
+
+    async setFavourites(email, favourites) {
+      const s = subscribers.get(email);
+      if (s) { s.favourites = favourites; scheduleSave(); }
     },
   };
 }
@@ -151,6 +158,8 @@ function createPgStorage(pool) {
       // Safe no-op if the column already exists — lets an existing deployed
       // DB pick up account support without a manual migration.
       await pool.query(`ALTER TABLE subscribers ADD COLUMN IF NOT EXISTS password_hash TEXT;`);
+      await pool.query(`ALTER TABLE subscribers ADD COLUMN IF NOT EXISTS plan TEXT;`);
+      await pool.query(`ALTER TABLE subscribers ADD COLUMN IF NOT EXISTS favourites JSONB NOT NULL DEFAULT '[]'::jsonb;`);
       await pool.query(`
         CREATE TABLE IF NOT EXISTS price_history (
           id SERIAL PRIMARY KEY,
@@ -187,6 +196,8 @@ function createPgStorage(pool) {
       // Safe no-op if the column already exists — picks up hit-history
       // tracking on an existing deployed DB with no manual migration.
       await pool.query(`ALTER TABLE signal_log ADD COLUMN IF NOT EXISTS hit_history JSONB NOT NULL DEFAULT '[]'::jsonb;`);
+      await pool.query(`ALTER TABLE signal_log ADD COLUMN IF NOT EXISTS alerted_new BOOLEAN NOT NULL DEFAULT false;`);
+      await pool.query(`ALTER TABLE signal_log ADD COLUMN IF NOT EXISTS alerted_levels JSONB NOT NULL DEFAULT '[]'::jsonb;`);
       await pool.query(`CREATE INDEX IF NOT EXISTS idx_signal_log_status ON signal_log (status);`);
       await pool.query(`CREATE INDEX IF NOT EXISTS idx_signal_log_instrument ON signal_log (instrument, created_at DESC);`);
     },
@@ -211,7 +222,7 @@ function createPgStorage(pool) {
       const fields = Object.keys(patch);
       const sets = fields.map((f, i) => `${f} = $${i + 2}`).join(', ');
       // jsonb columns need the JS array/object serialized before it hits the wire.
-      const values = fields.map(f => (f === 'hit_history' ? JSON.stringify(patch[f]) : patch[f]));
+      const values = fields.map(f => ((f === 'hit_history' || f === 'alerted_levels') ? JSON.stringify(patch[f]) : patch[f]));
       await pool.query(`UPDATE signal_log SET ${sets} WHERE id = $1`, [id, ...values]);
     },
     async listSignals(limit = 200) {
@@ -269,11 +280,11 @@ function createPgStorage(pool) {
       );
     },
 
-    async activate(email, days) {
+    async activate(email, days, plan = 'premium') {
       await pool.query(
-        `INSERT INTO subscribers (email, status, expires_at) VALUES ($1, 'active', now() + ($2 || ' days')::interval)
-         ON CONFLICT (email) DO UPDATE SET status = 'active', expires_at = now() + ($2 || ' days')::interval, updated_at = now()`,
-        [email, days]
+        `INSERT INTO subscribers (email, status, plan, expires_at) VALUES ($1, 'active', $3, now() + ($2 || ' days')::interval)
+         ON CONFLICT (email) DO UPDATE SET status = 'active', plan = $3, expires_at = now() + ($2 || ' days')::interval, updated_at = now()`,
+        [email, days, plan]
       );
     },
 
@@ -282,8 +293,12 @@ function createPgStorage(pool) {
     },
 
     async listSubscribers() {
-      const { rows } = await pool.query(`SELECT email, status, expires_at, created_at FROM subscribers ORDER BY created_at DESC`);
+      const { rows } = await pool.query(`SELECT email, status, plan, expires_at, created_at FROM subscribers ORDER BY created_at DESC`);
       return rows;
+    },
+
+    async setFavourites(email, favourites) {
+      await pool.query(`UPDATE subscribers SET favourites = $2, updated_at = now() WHERE email = $1`, [email, JSON.stringify(favourites)]);
     },
   };
 }

@@ -6,6 +6,8 @@ const { runEngine, buildSyntheticCandles, emaSeries, EMA_FAST_PERIOD, EMA_SLOW_P
 const { sendMail } = require('./mailer');
 const twelveData = require('./twelvedata');
 const { detectPatterns } = require('./patterns');
+const { PLANS, RANK, planOf, atLeast } = require('./plans');
+const ai = require('./ai');
 
 const app = express();
 app.use(cors());
@@ -18,8 +20,14 @@ app.use(express.static('public', { etag: true, lastModified: true, setHeaders: (
 
 const PORT = process.env.PORT || 3000;
 const ADMIN_KEY = process.env.ADMIN_KEY || 'change-me-admin-key';
-const PAYPAL_LINK = process.env.PAYPAL_LINK || 'https://paypal.me/IYTechnologies/45';
-const PRICE_MONTHLY = process.env.PRICE_LABEL || 'R45/month';
+// Per-plan PayPal.me links: same handle, different amount per tier — mirrors
+// the pattern already proven out on ResumeBuilderAI. PAYPAL_LINK stays as a
+// back-compat override for the Premium price specifically (existing env var).
+const PAYPAL_HANDLE = process.env.PAYPAL_HANDLE || 'IYTechnologies';
+const PAYPAL_LINK = process.env.PAYPAL_LINK || `https://paypal.me/${PAYPAL_HANDLE}/${PLANS.premium.price}`;
+const PRICE_MONTHLY = process.env.PRICE_LABEL || `R${PLANS.premium.price}/month`;
+function payLinkFor(plan) { return `https://paypal.me/${PAYPAL_HANDLE}/${PLANS[plan]?.price ?? PLANS.premium.price}`; }
+function priceLabelFor(plan) { return `R${PLANS[plan]?.price ?? PLANS.premium.price}/month`; }
 const DEMO_MODE = !process.env.DATABASE_URL;
 
 // ---- Storage: real Postgres if DATABASE_URL is set, else in-memory demo mode ----
@@ -270,6 +278,32 @@ function resolveSignalFromCandles(sig, candles) {
   return { hitHistory, bestLevel, status, outcome, closedAt: closedAt ? new Date(closedAt).toISOString() : null };
 }
 
+// ---- Alerts (Pro+ only, per spec): new high-confidence signal, and TP/SL
+// touches on an open one. Dedup via alerted_new/alerted_levels on the signal
+// row itself, so a redeploy or a slow poll cycle can never double-send.
+const HIGH_CONFIDENCE_THRESHOLD = 70;
+async function getAlertRecipients() {
+  const subs = await store.listSubscribers();
+  const now = new Date();
+  return subs.filter(s => s.status === 'active' && s.expires_at && new Date(s.expires_at) > now && atLeast(s.plan || 'free', 'pro'));
+}
+async function alertNewSignal(sig) {
+  if (sig.confidence == null || sig.confidence < HIGH_CONFIDENCE_THRESHOLD) return;
+  const recipients = await getAlertRecipients();
+  if (!recipients.length) return;
+  const subject = `New ${sig.confidence}%-confidence setup: ${LABELS[sig.instrument] || sig.instrument} (${sig.side})`;
+  const body = `${LABELS[sig.instrument] || sig.instrument} — ${sig.side} via ${sig.strategy}, confidence ${sig.confidence}/100.\nEntry: ${sig.entry}\nStop loss: ${sig.sl}\nTargets: ${sig.tp1}, ${sig.tp2}, ${sig.tp3}, ${sig.tp4}\n\nInformational only — conduct your own analysis before trading.`;
+  for (const r of recipients) sendMail(r.email, subject, body);
+}
+async function alertLevelTouch(sig, newLevels) {
+  if (!newLevels.length) return;
+  const recipients = await getAlertRecipients();
+  if (!recipients.length) return;
+  const subject = `${LABELS[sig.instrument] || sig.instrument} touched ${newLevels.join(', ')}`;
+  const body = `Your tracked setup on ${LABELS[sig.instrument] || sig.instrument} (${sig.side} via ${sig.strategy}) just touched: ${newLevels.join(', ')}.\n\nInformational only.`;
+  for (const r of recipients) sendMail(r.email, subject, body);
+}
+
 // ---- Track record: logs each new setup the engine surfaces, and resolves
 // open ones by walking real candle history every poll cycle. This is what
 // lets /api/performance show an honest, non-cherry-picked history (wins AND
@@ -291,6 +325,15 @@ async function trackSignals() {
         if (!changed) continue;
         const patch = { hit_history: resolved.hitHistory, best_level: resolved.bestLevel };
         if (resolved.status === 'closed') { patch.status = 'closed'; patch.outcome = resolved.outcome; patch.closed_at = resolved.closedAt; }
+
+        const alertedLevels = new Set(sig.alerted_levels || []);
+        const newlyHitLevels = resolved.hitHistory.map(h => h.level).filter(l => !alertedLevels.has(l));
+        const newlyHitSL = resolved.status === 'closed' && resolved.outcome === 'SL' && !alertedLevels.has('SL');
+        const touchLabels = [...newlyHitLevels, ...(newlyHitSL ? ['SL'] : [])];
+        if (touchLabels.length) {
+          await alertLevelTouch(sig, touchLabels);
+          patch.alerted_levels = [...alertedLevels, ...touchLabels];
+        }
         await store.updateSignalOutcome(sig.id, patch);
       }
     }
@@ -303,12 +346,14 @@ async function trackSignals() {
           // Structure changed before this setup resolved — close it out as invalidated rather than leaving it dangling.
           await store.updateSignalOutcome(latest.id, { status: 'closed', outcome: 'INVALIDATED', closed_at: new Date().toISOString() });
         }
-        await store.logSignal({
+        const row = await store.logSignal({
           instrument: key, strategy: result.strategy, regime: result.regime, side: result.signal,
           entry: result.levels.entry, sl: result.levels.sl,
           tp1: result.levels.tp1, tp2: result.levels.tp2, tp3: result.levels.tp3, tp4: result.levels.tp4,
           confidence: result.confidence,
         });
+        await alertNewSignal(row);
+        await store.updateSignalOutcome(row.id, { alerted_new: true });
       }
     }
   }
@@ -336,7 +381,7 @@ function computePerformanceStats(rows) {
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 app.get('/api/config', (req, res) => {
-  res.json({ demoMode: DEMO_MODE, payLink: PAYPAL_LINK, price: PRICE_MONTHLY, timeframes: TIMEFRAMES });
+  res.json({ demoMode: DEMO_MODE, payLink: PAYPAL_LINK, price: PRICE_MONTHLY, timeframes: TIMEFRAMES, plans: PLANS, marketCount: ALL_KEYS.length, aiConfigured: ai.isAiConfigured() });
 });
 
 // Currency conversion for display only — billing stays in ZAR via PayPal.
@@ -421,7 +466,7 @@ app.get('/api/auth/me', async (req, res) => {
   if (!req.authEmail) return res.status(401).json({ error: 'Not logged in.' });
   const sub = await store.getSubscriber(req.authEmail);
   const active = !!(sub && sub.status === 'active' && sub.expires_at && new Date(sub.expires_at) > new Date());
-  res.json({ email: req.authEmail, status: sub?.status || 'pending', expiresAt: sub?.expires_at || null, active });
+  res.json({ email: req.authEmail, status: sub?.status || 'pending', expiresAt: sub?.expires_at || null, active, plan: planOf(sub), favourites: sub?.favourites || [] });
 });
 
 app.get('/api/prices', (req, res) => {
@@ -437,18 +482,22 @@ app.get('/api/prices', (req, res) => {
 
 app.post('/api/subscribe', async (req, res) => {
   const email = req.authEmail || String(req.body?.email || '').trim().toLowerCase();
+  const plan = ['premium', 'pro', 'elite'].includes(req.body?.plan) ? req.body.plan : 'premium';
   if (!isValidEmail(email)) {
     return res.status(400).json({ error: 'Enter a valid email address.' });
   }
   await store.upsertPending(email);
+  const price = priceLabelFor(plan);
+  const link = payLinkFor(plan);
   res.json({
     ok: true,
     demoMode: DEMO_MODE,
-    payLink: PAYPAL_LINK,
-    price: PRICE_MONTHLY,
+    plan,
+    payLink: link,
+    price,
     instructions: DEMO_MODE
-      ? `Demo mode: no real charge. Click "Simulate Payment" below to test what a subscriber sees.`
-      : `Pay ${PRICE_MONTHLY} via the link, then message us your payment reference with this email (${email}) so we can activate your access. Activation is manual for now — usually within a few hours.`,
+      ? `Demo mode: no real charge. Click "Simulate Payment" below to test what a ${PLANS[plan].label} subscriber sees.`
+      : `Pay ${price} via the link, then message us your payment reference with this email (${email}) so we can activate your ${PLANS[plan].label} access. Activation is manual for now — usually within a few hours.`,
   });
 });
 
@@ -457,10 +506,11 @@ app.post('/api/subscribe', async (req, res) => {
 app.post('/api/demo/activate', async (req, res) => {
   if (!DEMO_MODE) return res.status(403).json({ error: 'Demo activation is disabled — real payments are live.' });
   const email = req.authEmail || String(req.body?.email || '').trim().toLowerCase();
+  const plan = ['premium', 'pro', 'elite'].includes(req.body?.plan) ? req.body.plan : 'premium';
   if (!email) return res.status(400).json({ error: 'email required' });
-  await store.activate(email, 30);
-  sendMail(email, 'Your TradingAnalysis subscription is active (demo)', `This is a demo activation — no real payment was taken. Your access is active for 30 days.`);
-  res.json({ ok: true });
+  await store.activate(email, 30, plan);
+  sendMail(email, `Your TradingAnalysis ${PLANS[plan].label} subscription is active (demo)`, `This is a demo activation — no real payment was taken. Your ${PLANS[plan].label} access is active for 30 days.`);
+  res.json({ ok: true, plan });
 });
 
 app.get('/api/insights', async (req, res) => {
@@ -468,16 +518,21 @@ app.get('/api/insights', async (req, res) => {
   if (!email) return res.status(400).json({ error: 'email is required' });
 
   const sub = await store.getSubscriber(email);
-  const active = sub && sub.status === 'active' && sub.expires_at && new Date(sub.expires_at) > new Date();
+  const plan = planOf(sub);
+  const premium = atLeast(plan, 'premium');
 
-  if (!active) {
+  if (!premium) {
     return res.status(402).json({
       locked: true,
+      plan,
       payLink: PAYPAL_LINK,
       price: PRICE_MONTHLY,
-      message: 'Subscribe to unlock market-structure insights for all 12 tracked markets.',
+      message: `Subscribe to unlock market-structure insights for all ${ALL_KEYS.length} tracked markets.`,
     });
   }
+
+  const proTools = atLeast(plan, 'pro');
+  const elite = atLeast(plan, 'elite');
 
   const signals = [];
   for (const key of ALL_KEYS) {
@@ -485,15 +540,72 @@ app.get('/api/insights', async (req, res) => {
     signals.push({ key, label: LABELS[key], ...s });
   }
 
-  // Surface the single strongest setup across all 12 markets, so a user
-  // isn't left to guess which of 12 mixed-confidence reads to actually pay
+  // Surface the single strongest setup across all tracked markets, so a user
+  // isn't left to guess which mixed-confidence read to actually pay
   // attention to. Ties broken by which strategy fired (arbitrary but stable).
   const actionable = signals.filter(s => s.signal !== 'HOLD' && s.confidence != null);
   const topPick = actionable.length
     ? actionable.reduce((best, s) => (s.confidence > best.confidence ? s : best))
     : null;
 
-  res.json({ locked: false, expiresAt: sub.expires_at, signals, topPick });
+  const payload = { locked: false, plan, expiresAt: sub.expires_at, signals, topPick, proTools, elite };
+
+  if (proTools) {
+    payload.favourites = sub.favourites || [];
+    const stats = computePerformanceStats(await store.listSignals(500));
+    payload.bestMarkets = Object.entries(stats.byInstrument)
+      .map(([key, s]) => ({ key, label: LABELS[key], ...s, winRate: (s.wins + s.losses) ? Math.round((s.wins / (s.wins + s.losses)) * 1000) / 10 : null }))
+      .sort((a, b) => (b.winRate ?? -1) - (a.winRate ?? -1));
+  }
+
+  res.json(payload);
+});
+
+// AI Elite: per-signal AI explanation, gated to elite plan.
+app.get('/api/ai/explain', async (req, res) => {
+  const email = req.authEmail || String(req.query.email || '').trim().toLowerCase();
+  const key = String(req.query.key || '');
+  if (!ALL_KEYS.includes(key)) return res.status(404).json({ error: 'unknown instrument' });
+  const sub = await store.getSubscriber(email);
+  if (!atLeast(planOf(sub), 'elite')) return res.status(402).json({ locked: true, message: 'AI explanations are an AI Elite feature.' });
+  const insight = await getCachedInsight(key);
+  if (insight.signal === 'HOLD') return res.json({ mode: 'template', explanation: insight.note });
+  const result = await ai.explainSignalAi({ instrument: key, ...insight, patternName: insight.patterns?.find(p => p.confirmed)?.name });
+  res.json(result);
+});
+
+// AI Elite: Q&A about a specific market's current setup, gated to elite plan.
+app.post('/api/ai/ask', async (req, res) => {
+  const email = req.authEmail || String(req.body?.email || '').trim().toLowerCase();
+  const key = String(req.body?.key || '');
+  const question = String(req.body?.question || '').trim();
+  if (!question) return res.status(400).json({ error: 'question required' });
+  const sub = await store.getSubscriber(email);
+  if (!atLeast(planOf(sub), 'elite')) return res.status(402).json({ locked: true, message: 'Ask-the-AI is an AI Elite feature.' });
+  const context = ALL_KEYS.includes(key) ? { instrument: key, label: LABELS[key], ...(await getCachedInsight(key)) } : { note: 'No specific market selected.' };
+  const result = await ai.answerQuestion(question, context);
+  res.json(result);
+});
+
+// AI Elite: daily summary across all open setups, gated to elite plan.
+app.get('/api/ai/daily-summary', async (req, res) => {
+  const email = req.authEmail || String(req.query.email || '').trim().toLowerCase();
+  const sub = await store.getSubscriber(email);
+  if (!atLeast(planOf(sub), 'elite')) return res.status(402).json({ locked: true, message: 'Daily AI summaries are an AI Elite feature.' });
+  const open = await store.getOpenSignals();
+  const result = await ai.dailySummary(open.map(s => ({ instrument: s.instrument, side: s.side, strategy: s.strategy, confidence: s.confidence })));
+  res.json(result);
+});
+
+// Pro+: save/toggle favourite markets.
+app.post('/api/favourites', async (req, res) => {
+  const email = req.authEmail || String(req.body?.email || '').trim().toLowerCase();
+  if (!email) return res.status(400).json({ error: 'email required' });
+  const sub = await store.getSubscriber(email);
+  if (!atLeast(planOf(sub), 'pro')) return res.status(402).json({ locked: true, message: 'Favourites are a Pro Trader Tools feature.' });
+  const favourites = Array.isArray(req.body?.favourites) ? req.body.favourites.filter(k => ALL_KEYS.includes(k)) : [];
+  await store.setFavourites(email, favourites);
+  res.json({ ok: true, favourites });
 });
 
 // Track record — public, on purpose: showing losses alongside wins is what
@@ -504,11 +616,10 @@ app.get('/api/insights', async (req, res) => {
 // to a non-premium visitor.
 app.get('/api/performance', async (req, res) => {
   const email = req.authEmail || String(req.query.email || '').trim().toLowerCase();
-  let premium = false;
-  if (email) {
-    const sub = await store.getSubscriber(email);
-    premium = !!(sub && sub.status === 'active' && sub.expires_at && new Date(sub.expires_at) > new Date());
-  }
+  let plan = 'free';
+  if (email) plan = planOf(await store.getSubscriber(email));
+  const premium = atLeast(plan, 'premium');
+  const proTools = atLeast(plan, 'pro');
 
   const rows = await store.listSignals(500);
   const stats = computePerformanceStats(rows); // aggregate stats stay public either way — that's the credibility number
@@ -518,7 +629,14 @@ app.get('/api/performance', async (req, res) => {
     }
     return { ...r, label: LABELS[r.instrument] };
   });
-  res.json({ stats, recent, premium });
+
+  const payload = { stats, recent, premium, plan };
+  if (proTools) {
+    payload.bestMarkets = Object.entries(stats.byInstrument)
+      .map(([key, s]) => ({ key, label: LABELS[key], ...s, winRate: (s.wins + s.losses) ? Math.round((s.wins / (s.wins + s.losses)) * 1000) / 10 : null }))
+      .sort((a, b) => (b.winRate ?? -1) - (a.winRate ?? -1));
+  }
+  res.json(payload);
 });
 
 // Chart data for a single market: closes for everyone; EMA overlays +
@@ -528,11 +646,10 @@ app.get('/api/history', async (req, res) => {
   if (!ALL_KEYS.includes(key)) return res.status(404).json({ error: 'unknown instrument' });
 
   const email = req.authEmail || String(req.query.email || '').trim().toLowerCase();
-  let premium = false;
-  if (email) {
-    const sub = await store.getSubscriber(email);
-    premium = !!(sub && sub.status === 'active' && sub.expires_at && new Date(sub.expires_at) > new Date());
-  }
+  let plan = 'free';
+  if (email) plan = planOf(await store.getSubscriber(email));
+  const premium = atLeast(plan, 'premium'); // signal/levels
+  const proTools = atLeast(plan, 'pro'); // EMA/pattern overlays, chart tools
 
   const timeframe = TIMEFRAMES.includes(req.query.timeframe) ? req.query.timeframe : '1h';
 
@@ -551,13 +668,18 @@ app.get('/api/history', async (req, res) => {
     high: displayCandles.length ? Math.max(...displayCandles.map(c => c.high)) : null,
     low: displayCandles.length ? Math.min(...displayCandles.map(c => c.low)) : null,
     premium,
+    proTools,
+    plan,
   };
 
   if (premium && closes.length) {
-    payload.ema8 = emaSeries(closes, EMA_FAST_PERIOD);
-    payload.ema21 = emaSeries(closes, EMA_SLOW_PERIOD);
     payload.insight = { ...(await getCachedInsight(key)) };
     payload.insight.engineTimeframe = '1h'; // so the UI can label it even when displaying a different timeframe
+  }
+
+  if (proTools && closes.length) {
+    payload.ema8 = emaSeries(closes, EMA_FAST_PERIOD);
+    payload.ema21 = emaSeries(closes, EMA_SLOW_PERIOD);
     // Detected on whatever timeframe is actually being displayed (not the
     // fixed 1h engine data) so the overlay's points line up with the chart
     // the user is looking at — visual "prove it" layer, not a new signal.
@@ -575,7 +697,10 @@ function requireAdmin(req, res, next) {
 }
 
 app.get('/api/admin/subscribers', requireAdmin, async (req, res) => {
-  res.json({ subscribers: await store.listSubscribers() });
+  const q = String(req.query.q || '').trim().toLowerCase();
+  let subs = await store.listSubscribers();
+  if (q) subs = subs.filter(s => s.email.toLowerCase().includes(q));
+  res.json({ subscribers: subs.map(s => ({ ...s, plan: s.plan || null })) });
 });
 
 app.get('/api/admin/stats', requireAdmin, async (req, res) => {
@@ -585,9 +710,16 @@ app.get('/api/admin/stats', requireAdmin, async (req, res) => {
   const expired = subs.filter(s => s.status === 'active' && (!s.expires_at || new Date(s.expires_at) <= now));
   const pending = subs.filter(s => s.status === 'pending');
   const inactive = subs.filter(s => s.status === 'inactive');
-  const priceAmount = parseFloat(String(PRICE_MONTHLY).replace(/[^\d.]/g, '')) || 0;
+
+  const estimatedMRR = active.reduce((sum, s) => sum + (PLANS[s.plan]?.price ?? PLANS.premium.price), 0);
+  const byPlan = {};
+  for (const s of active) {
+    const p = s.plan || 'premium';
+    byPlan[p] = (byPlan[p] || 0) + 1;
+  }
 
   const signals = await store.listSignals(1000);
+  const perf = computePerformanceStats(signals);
 
   res.json({
     demoMode: DEMO_MODE,
@@ -600,23 +732,29 @@ app.get('/api/admin/stats', requireAdmin, async (req, res) => {
       expired: expired.length,
       pending: pending.length,
       inactive: inactive.length,
+      byPlan,
     },
     revenue: {
       priceLabel: PRICE_MONTHLY,
-      estimatedMRR: Math.round(active.length * priceAmount * 100) / 100,
-      note: 'Estimate = active subscribers × plan price. No real payment records are tracked yet (manual PayPal activation).',
+      estimatedMRR: Math.round(estimatedMRR * 100) / 100,
+      note: 'Estimate = sum of each active subscriber\'s plan price. No real payment records are tracked yet (manual activation until a payment gateway is wired in).',
     },
-    signals: computePerformanceStats(signals),
+    signals: perf,
+    marketPerformance: Object.entries(perf.byInstrument).map(([key, s]) => ({
+      key, label: LABELS[key], ...s,
+      winRate: (s.wins + s.losses) ? Math.round((s.wins / (s.wins + s.losses)) * 1000) / 10 : null,
+    })).sort((a, b) => (b.winRate ?? -1) - (a.winRate ?? -1)),
   });
 });
 
 app.post('/api/admin/activate', requireAdmin, async (req, res) => {
   const email = String(req.body?.email || '').trim().toLowerCase();
   const days = Number(req.body?.days || 30);
+  const plan = ['premium', 'pro', 'elite'].includes(req.body?.plan) ? req.body.plan : 'premium';
   if (!email) return res.status(400).json({ error: 'email required' });
-  await store.activate(email, days);
-  sendMail(email, 'Your TradingAnalysis subscription is active', `Thanks for your payment — your access is now active for ${days} days. You can view your insights any time you're logged in.`);
-  res.json({ ok: true });
+  await store.activate(email, days, plan);
+  sendMail(email, 'Your TradingAnalysis subscription is active', `Thanks for your payment — your ${PLANS[plan].label} access is now active for ${days} days. You can view your insights any time you're logged in.`);
+  res.json({ ok: true, plan });
 });
 
 app.post('/api/admin/deactivate', requireAdmin, async (req, res) => {

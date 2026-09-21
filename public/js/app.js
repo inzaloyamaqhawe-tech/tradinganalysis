@@ -48,6 +48,15 @@ async function loadTrackRecord() {
       <div class="stat-chip"><div class="n">${s.losses}</div><div class="l">Stopped out</div></div>
       <div class="stat-chip"><div class="n">${s.open}</div><div class="l">Still open</div></div>
     `;
+    const bestBox = document.getElementById('trackBestMarketsBox');
+    if (data.bestMarkets?.length) {
+      bestBox.style.display = 'block';
+      document.getElementById('trackBestMarketsList').innerHTML = data.bestMarkets.slice(0, 8).map(m => `
+        <div class="sp-row"><span>${m.label}</span><b>${m.winRate != null ? m.winRate + '% win rate' : '—'} (${m.wins}W / ${m.losses}L)</b></div>
+      `).join('');
+    } else {
+      bestBox.style.display = 'none';
+    }
     if (!data.recent.length) {
       rowsHost.innerHTML = `<tr><td colspan="7" class="note">No setups logged yet — check back once the engine has surfaced a few.</td></tr>`;
       return;
@@ -88,13 +97,15 @@ document.getElementById('goPricingBtn')?.addEventListener('click', () => showVie
 let isDemo = false;
 let planPriceZar = 45;
 let availableTimeframes = ['1h'];
+let PLANS = null;
+let marketCount = 14;
+let aiConfigured = false;
+
 fetch('/api/config').then(r => r.json()).then(cfg => {
   isDemo = !!cfg.demoMode;
   document.getElementById('demoBanner').style.display = isDemo ? 'block' : 'none';
   document.getElementById('demoPill').style.display = isDemo ? 'inline-block' : 'none';
-  document.getElementById('demoBtn').style.display = isDemo ? 'inline-block' : 'none';
   if (cfg.price) {
-    document.getElementById('planPrice').innerHTML = `${cfg.price.split('/')[0]} <span>/ month</span>`;
     document.getElementById('lockedPrice').textContent = cfg.price;
     planPriceZar = parseFloat(cfg.price.replace(/[^\d.]/g, '')) || 45;
   }
@@ -102,7 +113,72 @@ fetch('/api/config').then(r => r.json()).then(cfg => {
     availableTimeframes = cfg.timeframes;
     renderTimeframeGroup();
   }
+  if (cfg.plans) PLANS = cfg.plans;
+  if (cfg.marketCount) marketCount = cfg.marketCount;
+  aiConfigured = !!cfg.aiConfigured;
+  document.getElementById('statMarketCount').textContent = marketCount;
+  document.getElementById('lockedMarketCount').textContent = marketCount;
+  renderPlanGrid();
 }).catch(() => {});
+
+// ---------- Pricing: 4-tier plan grid ----------
+function renderPlanGrid() {
+  const host = document.getElementById('planGrid');
+  if (!host || !PLANS) return;
+  const currentPlan = currentUser?.plan || 'free';
+  host.innerHTML = Object.values(PLANS).map(p => `
+    <div class="plan-card ${p.key === currentPlan ? 'current' : ''}">
+      ${p.key === currentPlan ? '<div class="plan-badge">YOUR CURRENT PLAN</div>' : ''}
+      <div class="label" style="color:var(--gold); font-weight:700; letter-spacing:.05em; font-size:.8rem;">${p.label.toUpperCase()}</div>
+      <div class="plan-price">${p.price === 0 ? 'Free' : `R${p.price}`} ${p.price === 0 ? '' : '<span>/ month</span>'}</div>
+      <ul class="plan-list">${p.features.map(f => `<li>${f}</li>`).join('')}</ul>
+      ${p.key === 'free'
+        ? `<button class="secondary" data-plan-action="free">Already included</button>`
+        : `<div class="row"><button data-plan-action="subscribe" data-plan="${p.key}">Get ${p.label}</button></div>
+           ${isDemo ? `<div class="row" style="margin-top:8px;"><button class="secondary" data-plan-action="demo" data-plan="${p.key}">🧪 Simulate Payment</button></div>` : ''}`}
+    </div>
+  `).join('');
+
+  host.querySelectorAll('[data-plan-action="subscribe"]').forEach(btn => btn.addEventListener('click', () => subscribeToPlan(btn.dataset.plan)));
+  host.querySelectorAll('[data-plan-action="demo"]').forEach(btn => btn.addEventListener('click', () => demoActivatePlan(btn.dataset.plan)));
+}
+
+async function subscribeToPlan(plan) {
+  const email = currentUser?.email || subEmailInput.value.trim();
+  const subResult = document.getElementById('subResult');
+  if (!email) { subResult.textContent = 'Enter your email first, or create an account on the Dashboard.'; return; }
+  if (!currentUser) rememberEmail(email);
+  try {
+    const res = await fetch('/api/subscribe', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify({ email, plan }),
+    });
+    const data = await res.json();
+    if (!res.ok) { subResult.textContent = data.error || 'Something went wrong.'; return; }
+    subResult.innerHTML = `${data.instructions}${data.demoMode ? '' : `<br><br><a href="${data.payLink}" target="_blank" rel="noopener">👉 Pay ${data.price} via PayPal</a>`}`;
+  } catch (e) {
+    subResult.textContent = 'Network error — try again.';
+  }
+}
+
+async function demoActivatePlan(plan) {
+  const email = currentUser?.email || subEmailInput.value.trim();
+  const subResult = document.getElementById('subResult');
+  if (!email) { subResult.textContent = 'Enter your email first (above), or create an account on the Dashboard.'; return; }
+  if (!currentUser) rememberEmail(email);
+  try {
+    const res = await fetch('/api/demo/activate', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify({ email, plan }),
+    });
+    const data = await res.json();
+    if (!res.ok) { subResult.textContent = data.error || 'Something went wrong.'; return; }
+    subResult.textContent = `Simulated payment successful for ${email} — ${PLANS[plan]?.label || plan}. Go to Insights to see it unlocked.`;
+    checkEmailInput.value = email;
+    if (currentUser) await refreshMe();
+    renderPlanGrid();
+  } catch (e) {
+    subResult.textContent = 'Network error — try again.';
+  }
+}
 
 // ---------- Currency conversion (display only — billing stays in ZAR via PayPal) ----------
 const CURRENCY_SYMBOL = { ZAR: 'R', USD: '$', EUR: '€', GBP: '£', AUD: 'A$', NGN: '₦', KES: 'KSh', INR: '₹' };
@@ -533,7 +609,39 @@ function updateSidePanel(key, data) {
   setRow('spTp4', levels?.tp4);
   setRow('spSl', levels?.sl);
   document.getElementById('spLockedNote').style.display = data.premium ? 'none' : 'block';
+
+  const explainBox = document.getElementById('spExplainBox');
+  if (data.premium && insight?.explanation) {
+    explainBox.style.display = 'block';
+    document.getElementById('spExplanation').textContent = insight.explanation;
+    document.getElementById('spInvalidation').textContent = insight.invalidation || '';
+    const aiBtn = document.getElementById('spAiExplainBtn');
+    aiBtn.style.display = currentUser?.plan === 'elite' ? 'inline-block' : 'none';
+    document.getElementById('spAiExplainResult').textContent = '';
+  } else {
+    explainBox.style.display = 'none';
+  }
+
+  const favBtn = document.getElementById('favToggleBtn');
+  favBtn.style.display = data.proTools ? 'inline-block' : 'none';
+  favBtn.textContent = currentFavourites.includes(key) ? '★ Remove from favourites' : '☆ Add to favourites';
 }
+
+document.getElementById('favToggleBtn').addEventListener('click', async () => {
+  if (currentChartKey) { await toggleFavourite(currentChartKey); updateSidePanel(currentChartKey, lastChartData); }
+});
+
+document.getElementById('spAiExplainBtn').addEventListener('click', async () => {
+  if (!currentChartKey) return;
+  const email = currentUser?.email || knownEmail();
+  const resultEl = document.getElementById('spAiExplainResult');
+  resultEl.textContent = 'Thinking…';
+  try {
+    const res = await fetch(`/api/ai/explain?key=${encodeURIComponent(currentChartKey)}&email=${encodeURIComponent(email)}`, { headers: authHeaders() });
+    const d = await res.json();
+    resultEl.textContent = d.explanation || d.message || 'No explanation available.';
+  } catch (e) { resultEl.textContent = 'Network error — try again.'; }
+});
 
 let isDragging = false;
 drawCanvas.addEventListener('mousedown', (e) => {
@@ -570,12 +678,15 @@ function renderTimeframeGroup() {
   }));
 }
 
+let lastChartData = null;
+
 async function loadChartData(key) {
   document.getElementById('chartSub').textContent = 'Loading…';
   const email = currentUser?.email || knownEmail();
   try {
     const res = await fetch(`/api/history?key=${encodeURIComponent(key)}&timeframe=${encodeURIComponent(currentTimeframe)}${email ? `&email=${encodeURIComponent(email)}` : ''}`, { headers: authHeaders() });
     const data = await res.json();
+    lastChartData = data;
     chartState = { candles: data.candles || [], closes: data.closes || [], ema8: data.ema8, ema21: data.ema21, levels: data.insight?.levels, patterns: data.patterns || [] };
     updateSidePanel(key, data);
     resizeCanvases();
@@ -587,7 +698,11 @@ async function loadChartData(key) {
       : `No candles yet at ${currentTimeframe} — try 1h, or add a Twelve Data key for full FX timeframe coverage.`;
     document.getElementById('chartSub').textContent = rangeTxt;
 
-    if (data.premium) {
+    // proTools gates the chart-tool layer (EMA overlays, pattern overlays,
+    // drawing tools); premium (checked separately in updateSidePanel) gates
+    // the signal/levels themselves — a Premium-only subscriber sees the
+    // suggested trade in the side panel but not these chart overlays.
+    if (data.proTools) {
       enableDrawing(true);
       const legend = document.getElementById('chartLegend');
       const insight = data.insight;
@@ -597,6 +712,7 @@ async function loadChartData(key) {
       legend.innerHTML = `<span style="color:#f2b84b;">■</span> EMA8 &nbsp; <span style="color:#ff5d6c;">■</span> EMA21` +
         (insight ? ` &nbsp;·&nbsp; <strong style="color:${sigColor};">${BIAS_LABEL[insight.signal]}</strong>${insight.confidence != null ? ` (${insight.confidence}/100)` : ''}${insight.strategy ? ` · ${insight.strategy}` : ''} <span class="note" style="margin:0;">(engine reads 1h structure regardless of chart view)</span>` : '') +
         patternTxt;
+      document.getElementById('chartLockedNote').style.display = 'none';
     } else {
       enableDrawing(false);
       document.getElementById('chartLockedNote').style.display = 'block';
@@ -688,7 +804,7 @@ async function refreshMe() {
   if (!authToken) { currentUser = null; updateAuthUI(); return; }
   try {
     const res = await fetch('/api/auth/me', { headers: authHeaders() });
-    if (!res.ok) { clearToken(); } else { currentUser = await res.json(); }
+    if (!res.ok) { clearToken(); } else { currentUser = await res.json(); currentFavourites = currentUser.favourites || []; }
   } catch (e) { /* leave currentUser as-is on a network blip */ }
   updateAuthUI();
 }
@@ -704,11 +820,12 @@ function updateAuthUI() {
   if (loggedIn) {
     document.getElementById('authPill').textContent = currentUser.email;
     document.getElementById('authWhoEmail').textContent = currentUser.email;
+    const planLabel = PLANS?.[currentUser.plan]?.label || currentUser.plan;
     document.getElementById('authStatusNote').textContent = currentUser.active
-      ? `Premium active — expires ${new Date(currentUser.expiresAt).toLocaleDateString()}.`
-      : 'No active subscription yet.';
+      ? `${planLabel} active — expires ${new Date(currentUser.expiresAt).toLocaleDateString()}.`
+      : 'No active subscription yet — Free Market Watch.';
     document.getElementById('acctEmailShown').textContent = currentUser.email;
-    document.getElementById('acctStatus').textContent = currentUser.active ? 'Active' : (currentUser.status || 'pending');
+    document.getElementById('acctStatus').textContent = currentUser.active ? `Active (${planLabel})` : (currentUser.status || 'pending');
     document.getElementById('acctExpires').textContent = currentUser.expiresAt ? new Date(currentUser.expiresAt).toLocaleDateString() : '—';
 
     // No more retyping email on every screen — prefill + lock it in from the session.
@@ -716,6 +833,7 @@ function updateAuthUI() {
   } else {
     [subEmailInput, checkEmailInput].forEach(el => { el.readOnly = false; });
   }
+  renderPlanGrid();
 }
 
 document.querySelectorAll('.auth-tab').forEach(tab => tab.addEventListener('click', () => {
@@ -755,59 +873,174 @@ document.getElementById('goInsightsFromHero').addEventListener('click', () => sh
 document.getElementById('acctPricingBtn').addEventListener('click', () => showView('pricing'));
 document.getElementById('acctGoHeroBtn').addEventListener('click', () => showView('dashboard'));
 
-// ---------- Pricing: subscribe + demo simulate ----------
-const subBtn = document.getElementById('subBtn');
-const demoBtn = document.getElementById('demoBtn');
-const subResult = document.getElementById('subResult');
+// ---------- Pricing: element refs used by subscribeToPlan/demoActivatePlan above ----------
 const subEmailInput = document.getElementById('subEmail');
 const checkEmailInput = document.getElementById('checkEmail');
-
-subBtn.addEventListener('click', async () => {
-  const email = currentUser?.email || subEmailInput.value.trim();
-  if (!email) { subResult.textContent = 'Enter your email first, or create an account on the Dashboard.'; return; }
-  if (!currentUser) rememberEmail(email);
-  subBtn.disabled = true;
-  try {
-    const res = await fetch('/api/subscribe', {
-      method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify({ email }),
-    });
-    const data = await res.json();
-    if (!res.ok) { subResult.textContent = data.error || 'Something went wrong.'; return; }
-    subResult.innerHTML = `${data.instructions}${data.demoMode ? '' : `<br><br><a href="${data.payLink}" target="_blank" rel="noopener">👉 Pay ${data.price} via PayPal</a>`}`;
-  } catch (e) {
-    subResult.textContent = 'Network error — try again.';
-  } finally {
-    subBtn.disabled = false;
-  }
-});
-
-demoBtn.addEventListener('click', async () => {
-  const email = currentUser?.email || subEmailInput.value.trim();
-  if (!email) { subResult.textContent = 'Enter your email first (above), or create an account on the Dashboard.'; return; }
-  if (!currentUser) rememberEmail(email);
-  demoBtn.disabled = true;
-  try {
-    const res = await fetch('/api/demo/activate', {
-      method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify({ email }),
-    });
-    const data = await res.json();
-    if (!res.ok) { subResult.textContent = data.error || 'Something went wrong.'; return; }
-    subResult.textContent = `Simulated payment successful for ${email}. Go to Insights to see it unlocked.`;
-    checkEmailInput.value = email;
-    if (currentUser) await refreshMe();
-  } catch (e) {
-    subResult.textContent = 'Network error — try again.';
-  } finally {
-    demoBtn.disabled = false;
-  }
-});
 
 // ---------- Insights ----------
 const checkBtn = document.getElementById('checkBtn');
 const insightsMsg = document.getElementById('insightsMsg');
 const lockedBox = document.getElementById('lockedBox');
+const riskGate = document.getElementById('riskGate');
 const signalsWrap = document.getElementById('signalsWrap');
 const signalsList = document.getElementById('signalsList');
+
+function riskAccepted() { try { return localStorage.getItem('ta_risk_accepted') === '1'; } catch (e) { return false; } }
+function acceptRisk() { try { localStorage.setItem('ta_risk_accepted', '1'); } catch (e) {} }
+
+document.getElementById('riskAcceptCheck').addEventListener('change', (e) => {
+  document.getElementById('riskAcceptBtn').disabled = !e.target.checked;
+});
+document.getElementById('riskAcceptBtn').addEventListener('click', () => {
+  acceptRisk();
+  riskGate.style.display = 'none';
+  if (lastInsightsData) renderInsights(lastInsightsData);
+});
+
+let lastInsightsData = null;
+let currentFavourites = [];
+
+async function toggleFavourite(key) {
+  const email = currentUser?.email || checkEmailInput.value.trim();
+  if (!email) return;
+  const idx = currentFavourites.indexOf(key);
+  if (idx >= 0) currentFavourites.splice(idx, 1); else currentFavourites.push(key);
+  try {
+    await fetch('/api/favourites', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ email, favourites: currentFavourites }),
+    });
+  } catch (e) {}
+  if (lastInsightsData) renderInsights(lastInsightsData);
+}
+
+function applyFilters(signals) {
+  const minConf = parseInt(document.getElementById('filterConfidence').value, 10) || 0;
+  const strategy = document.getElementById('filterStrategy').value;
+  const direction = document.getElementById('filterDirection').value;
+  const favOnly = document.getElementById('filterFavOnly').checked;
+  return signals.filter(s => {
+    if (s.confidence != null && s.confidence < minConf) return false;
+    if (strategy && s.strategy !== strategy) return false;
+    if (direction && s.signal !== direction) return false;
+    if (favOnly && !currentFavourites.includes(s.key)) return false;
+    return true;
+  });
+}
+
+function signalRowHtml(s, proTools) {
+  const isFav = currentFavourites.includes(s.key);
+  return `
+    <div class="signal-row">
+      <div>
+        <div class="name">${s.label} ${proTools ? `<button class="ghost fav-star" data-fav-key="${s.key}" title="Toggle favourite" style="padding:0 4px;">${isFav ? '★' : '☆'}</button>` : ''}</div>
+        <div class="regime">${(s.regime || '').replace('_', ' ').toLowerCase() || ''}${s.strategy ? ' · ' + s.strategy : ''}</div>
+      </div>
+      <div class="badge ${s.signal}">${BIAS_LABEL[s.signal]}${s.confidence != null ? ` · ${s.confidence}/100` : ''}</div>
+      <div></div>
+      <div class="sig-note">${s.note}${s.explanation ? `<br><em>${s.explanation}</em>` : ''}</div>
+      ${s.levels ? `
+        <div class="levels-strip">
+          <span class="level-chip sl">SL <b>${s.levels.sl}</b></span>
+          <span class="level-chip">TP1 <b>${s.levels.tp1}</b></span>
+          <span class="level-chip">TP2 <b>${s.levels.tp2}</b></span>
+          <span class="level-chip">TP3 <b>${s.levels.tp3}</b></span>
+          <span class="level-chip tp4">TP4 <b>${s.levels.tp4}</b> (${s.levels.riskReward})</span>
+        </div>` : ''}
+    </div>
+  `;
+}
+
+async function loadAiElite(data) {
+  const box = document.getElementById('aiEliteBox');
+  box.style.display = 'block';
+  const summaryEl = document.getElementById('aiDailySummary');
+  summaryEl.textContent = 'Loading…';
+  try {
+    const email = currentUser?.email || checkEmailInput.value.trim();
+    const res = await fetch(`/api/ai/daily-summary?email=${encodeURIComponent(email)}`, { headers: authHeaders() });
+    const d = await res.json();
+    summaryEl.textContent = d.summary || 'No summary available.';
+  } catch (e) { summaryEl.textContent = 'Could not load AI summary.'; }
+}
+
+document.getElementById('aiAskBtn').addEventListener('click', async () => {
+  const question = document.getElementById('aiQuestionInput').value.trim();
+  const answerBox = document.getElementById('aiAnswerBox');
+  if (!question) return;
+  const email = currentUser?.email || checkEmailInput.value.trim();
+  answerBox.textContent = 'Thinking…';
+  try {
+    const res = await fetch('/api/ai/ask', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ email, key: lastInsightsData?.topPick?.key, question }),
+    });
+    const d = await res.json();
+    answerBox.textContent = d.answer || d.message || 'No answer available.';
+  } catch (e) { answerBox.textContent = 'Network error — try again.'; }
+});
+
+function renderInsights(data) {
+  lastInsightsData = data;
+  currentFavourites = data.favourites || currentFavourites;
+  insightsMsg.textContent = `Active (${PLANS?.[data.plan]?.label || data.plan}) — renews/expires ${new Date(data.expiresAt).toLocaleDateString()}`;
+  signalsWrap.style.display = 'block';
+
+  const topPickBox = document.getElementById('topPickBox');
+  const p = data.topPick;
+  topPickBox.innerHTML = !p ? `
+    <div class="top-pick"><span class="tp-empty">No high-confidence setup across any tracked market right now — all ${marketCount} are neutral or low-conviction. Check back soon rather than forcing a trade.</span></div>
+  ` : `
+    <div class="top-pick">
+      <div class="eyebrow">⭐ Best opportunity right now</div>
+      <div class="tp-head">
+        <div class="tp-name">${p.label} — ${BIAS_LABEL[p.signal]}</div>
+        <div class="badge ${p.signal}">${p.confidence}/100</div>
+      </div>
+      <div class="regime" style="margin-bottom:8px;">${(p.regime || '').replace('_', ' ').toLowerCase()}${p.strategy ? ' · ' + p.strategy : ''}</div>
+      <div class="sig-note" style="margin-bottom:8px;">${p.note}${p.explanation ? `<br><em>${p.explanation}</em>` : ''}</div>
+      ${p.levels ? `
+        <div class="levels-strip">
+          <span class="level-chip sl">SL <b>${p.levels.sl}</b></span>
+          <span class="level-chip">TP1 <b>${p.levels.tp1}</b></span>
+          <span class="level-chip">TP2 <b>${p.levels.tp2}</b></span>
+          <span class="level-chip">TP3 <b>${p.levels.tp3}</b></span>
+          <span class="level-chip tp4">TP4 <b>${p.levels.tp4}</b> (${p.levels.riskReward})</span>
+        </div>` : ''}
+    </div>
+  `;
+
+  document.getElementById('filterBox').style.display = data.proTools ? 'block' : 'none';
+  if (data.proTools) {
+    const stratSelect = document.getElementById('filterStrategy');
+    const strategies = [...new Set(data.signals.map(s => s.strategy).filter(Boolean))];
+    if (stratSelect.dataset.built !== strategies.join(',')) {
+      stratSelect.innerHTML = '<option value="">All strategies</option>' + strategies.map(s => `<option value="${s}">${s}</option>`).join('');
+      stratSelect.dataset.built = strategies.join(',');
+    }
+  }
+
+  const bestBox = document.getElementById('bestMarketsBox');
+  if (data.proTools && data.bestMarkets?.length) {
+    bestBox.style.display = 'block';
+    document.getElementById('bestMarketsList').innerHTML = data.bestMarkets.slice(0, 5).map(m => `
+      <div class="sp-row"><span>${m.label}</span><b>${m.winRate != null ? m.winRate + '% win rate' : '—'} (${m.wins}W / ${m.losses}L)</b></div>
+    `).join('');
+  } else {
+    bestBox.style.display = 'none';
+  }
+
+  if (data.elite && aiConfigured !== null) loadAiElite(data);
+  else document.getElementById('aiEliteBox').style.display = 'none';
+
+  let ordered = applyFilters(data.signals);
+  if (data.proTools) ordered = [...ordered].sort((a, b) => (currentFavourites.includes(b.key) ? 1 : 0) - (currentFavourites.includes(a.key) ? 1 : 0));
+  signalsList.innerHTML = ordered.map(s => signalRowHtml(s, data.proTools)).join('') || '<p class="note">No signals match the current filters.</p>';
+  signalsList.querySelectorAll('[data-fav-key]').forEach(btn => btn.addEventListener('click', () => toggleFavourite(btn.dataset.favKey)));
+}
+
+[document.getElementById('filterConfidence'), document.getElementById('filterStrategy'), document.getElementById('filterDirection'), document.getElementById('filterFavOnly')]
+  .forEach(el => el.addEventListener('input', () => { if (lastInsightsData) renderInsights(lastInsightsData); }));
 
 checkBtn.addEventListener('click', async () => {
   const email = currentUser?.email || checkEmailInput.value.trim();
@@ -815,6 +1048,7 @@ checkBtn.addEventListener('click', async () => {
   if (!currentUser) rememberEmail(email);
   checkBtn.disabled = true;
   lockedBox.style.display = 'none';
+  riskGate.style.display = 'none';
   signalsWrap.style.display = 'none';
   insightsMsg.textContent = 'Loading…';
   try {
@@ -826,52 +1060,14 @@ checkBtn.addEventListener('click', async () => {
       return;
     }
     if (!res.ok) { insightsMsg.textContent = data.error || 'Something went wrong.'; return; }
-    insightsMsg.textContent = `Active — renews/expires ${new Date(data.expiresAt).toLocaleDateString()}`;
-    signalsWrap.style.display = 'block';
 
-    const topPickBox = document.getElementById('topPickBox');
-    const p = data.topPick;
-    topPickBox.innerHTML = !p ? `
-      <div class="top-pick"><span class="tp-empty">No high-confidence setup across any tracked market right now — all 12 are neutral or low-conviction. Check back soon rather than forcing a trade.</span></div>
-    ` : `
-      <div class="top-pick">
-        <div class="eyebrow">⭐ Best opportunity right now</div>
-        <div class="tp-head">
-          <div class="tp-name">${p.label} — ${BIAS_LABEL[p.signal]}</div>
-          <div class="badge ${p.signal}">${p.confidence}/100</div>
-        </div>
-        <div class="regime" style="margin-bottom:8px;">${(p.regime || '').replace('_', ' ').toLowerCase()}${p.strategy ? ' · ' + p.strategy : ''}</div>
-        <div class="sig-note" style="margin-bottom:8px;">${p.note}</div>
-        ${p.levels ? `
-          <div class="levels-strip">
-            <span class="level-chip sl">SL <b>${p.levels.sl}</b></span>
-            <span class="level-chip">TP1 <b>${p.levels.tp1}</b></span>
-            <span class="level-chip">TP2 <b>${p.levels.tp2}</b></span>
-            <span class="level-chip">TP3 <b>${p.levels.tp3}</b></span>
-            <span class="level-chip tp4">TP4 <b>${p.levels.tp4}</b> (${p.levels.riskReward})</span>
-          </div>` : ''}
-      </div>
-    `;
-
-    signalsList.innerHTML = data.signals.map(s => `
-      <div class="signal-row">
-        <div>
-          <div class="name">${s.label}</div>
-          <div class="regime">${(s.regime || '').replace('_', ' ').toLowerCase() || ''}${s.strategy ? ' · ' + s.strategy : ''}</div>
-        </div>
-        <div class="badge ${s.signal}">${BIAS_LABEL[s.signal]}${s.confidence != null ? ` · ${s.confidence}/100` : ''}</div>
-        <div></div>
-        <div class="sig-note">${s.note}</div>
-        ${s.levels ? `
-          <div class="levels-strip">
-            <span class="level-chip sl">SL <b>${s.levels.sl}</b></span>
-            <span class="level-chip">TP1 <b>${s.levels.tp1}</b></span>
-            <span class="level-chip">TP2 <b>${s.levels.tp2}</b></span>
-            <span class="level-chip">TP3 <b>${s.levels.tp3}</b></span>
-            <span class="level-chip tp4">TP4 <b>${s.levels.tp4}</b> (${s.levels.riskReward})</span>
-          </div>` : ''}
-      </div>
-    `).join('');
+    if (!riskAccepted()) {
+      insightsMsg.textContent = '';
+      riskGate.style.display = 'block';
+      lastInsightsData = data;
+      return;
+    }
+    renderInsights(data);
   } catch (e) {
     insightsMsg.textContent = 'Network error — try again.';
   } finally {

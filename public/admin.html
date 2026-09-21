@@ -46,15 +46,33 @@
   <div class="panel">
     <div class="row">
       <input type="email" id="quickEmail" placeholder="email to activate" />
+      <select id="quickPlan">
+        <option value="premium">Premium Insights (R45)</option>
+        <option value="pro">Pro Trader Tools (R149)</option>
+        <option value="elite">AI Elite (R299)</option>
+      </select>
       <input type="number" id="quickDays" placeholder="days" value="30" style="max-width:100px; min-width:100px;" />
       <button id="activateBtn">Activate</button>
     </div>
   </div>
 
   <div class="panel">
+    <div class="row">
+      <input type="text" id="searchQ" placeholder="Search subscribers by email…" />
+      <button id="searchBtn">Search</button>
+      <button class="ghost" id="clearSearchBtn">Clear</button>
+    </div>
     <table>
-      <thead><tr><th>Email</th><th>Status</th><th>Expires</th><th>Action</th></tr></thead>
+      <thead><tr><th>Email</th><th>Status</th><th>Plan</th><th>Expires</th><th>Action</th></tr></thead>
       <tbody id="rows"></tbody>
+    </table>
+  </div>
+
+  <div class="panel">
+    <h3 class="section-title" style="font-size:1rem;">Signal performance by market</h3>
+    <table>
+      <thead><tr><th>Market</th><th>Wins</th><th>Losses</th><th>Win rate</th></tr></thead>
+      <tbody id="marketPerfRows"></tbody>
     </table>
   </div>
 </main>
@@ -77,26 +95,34 @@
     const host = document.getElementById('statsRow');
     if (!data.users) { host.innerHTML = `<div class="note">${data.error || 'error loading stats'}</div>`; return; }
     const lastPoll = data.lastPollAt ? new Date(data.lastPollAt).toLocaleTimeString() : 'never';
+    const byPlan = Object.entries(data.users.byPlan || {}).map(([p, n]) => `${p}: ${n}`).join(', ') || 'none';
     host.innerHTML = `
       <div class="stat-chip"><div class="n">${data.users.total}</div><div class="l">Registered users</div></div>
-      <div class="stat-chip"><div class="n">${data.users.active}</div><div class="l">Active subs</div></div>
+      <div class="stat-chip"><div class="n">${data.users.active}</div><div class="l">Active subs (${byPlan})</div></div>
       <div class="stat-chip"><div class="n">${data.users.pending}</div><div class="l">Pending</div></div>
       <div class="stat-chip"><div class="n">${data.users.expired + data.users.inactive}</div><div class="l">Expired/inactive</div></div>
-      <div class="stat-chip"><div class="n">${(data.revenue.priceLabel.match(/^\D+/) || ['R'])[0]}${data.revenue.estimatedMRR}</div><div class="l">Est. MRR (${data.revenue.priceLabel})</div></div>
+      <div class="stat-chip"><div class="n">R${data.revenue.estimatedMRR}</div><div class="l">Est. MRR</div></div>
       <div class="stat-chip"><div class="n">${data.signals.wins}/${data.signals.losses}</div><div class="l">Signal wins/losses</div></div>
       <div class="stat-chip"><div class="n">${data.demoMode ? 'DEMO' : 'LIVE'}</div><div class="l">Mode · last poll ${lastPoll}</div></div>
     `;
+
+    const perfRows = document.getElementById('marketPerfRows');
+    perfRows.innerHTML = (data.marketPerformance || []).map(m => `
+      <tr><td>${m.label}</td><td>${m.wins}</td><td>${m.losses}</td><td>${m.winRate != null ? m.winRate + '%' : '—'}</td></tr>
+    `).join('') || '<tr><td colspan="4" class="note">No resolved signals yet.</td></tr>';
   }
 
   async function load() {
     await loadStats();
-    const data = await api('/api/admin/subscribers');
+    const q = document.getElementById('searchQ').value.trim();
+    const data = await api(`/api/admin/subscribers${q ? `?q=${encodeURIComponent(q)}` : ''}`);
     const rows = document.getElementById('rows');
-    if (!data.subscribers) { rows.innerHTML = `<tr><td colspan="4">${data.error || 'error'}</td></tr>`; return; }
+    if (!data.subscribers) { rows.innerHTML = `<tr><td colspan="5">${data.error || 'error'}</td></tr>`; return; }
     rows.innerHTML = data.subscribers.map(s => `
       <tr>
         <td>${s.email}</td>
         <td class="status-${s.status}">${s.status}</td>
+        <td>${s.plan || '—'}</td>
         <td>${s.expires_at ? new Date(s.expires_at).toLocaleDateString() : '—'}</td>
         <td>
           <button data-email="${s.email}" class="act">Activate 30d</button>
@@ -104,18 +130,21 @@
         </td>
       </tr>
     `).join('');
-    document.querySelectorAll('.act').forEach(b => b.addEventListener('click', () => activate(b.dataset.email, 30)));
+    document.querySelectorAll('.act').forEach(b => b.addEventListener('click', () => activate(b.dataset.email, 30, document.getElementById('quickPlan').value)));
     document.querySelectorAll('.deact').forEach(b => b.addEventListener('click', () => deactivate(b.dataset.email)));
   }
 
-  async function activate(email, days) { await api('/api/admin/activate', { method: 'POST', body: JSON.stringify({ email, days }) }); load(); }
+  async function activate(email, days, plan) { await api('/api/admin/activate', { method: 'POST', body: JSON.stringify({ email, days, plan }) }); load(); }
   async function deactivate(email) { await api('/api/admin/deactivate', { method: 'POST', body: JSON.stringify({ email }) }); load(); }
 
   document.getElementById('loadBtn').addEventListener('click', load);
+  document.getElementById('searchBtn').addEventListener('click', load);
+  document.getElementById('clearSearchBtn').addEventListener('click', () => { document.getElementById('searchQ').value = ''; load(); });
   document.getElementById('activateBtn').addEventListener('click', () => {
     const email = document.getElementById('quickEmail').value.trim();
     const days = Number(document.getElementById('quickDays').value || 30);
-    if (email) activate(email, days);
+    const plan = document.getElementById('quickPlan').value;
+    if (email) activate(email, days, plan);
   });
 </script>
 </body>

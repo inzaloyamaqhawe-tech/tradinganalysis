@@ -258,6 +258,12 @@ button:disabled { opacity: .6; cursor: default; }
 .plan-list { list-style: none; padding: 0; margin: 16px 0; display: grid; gap: 8px; font-size: .9rem; color: var(--text); }
 .plan-list li::before { content: "✓ "; color: var(--up); font-weight: 800; }
 
+.plan-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; align-items: start; }
+.plan-grid .plan-card { max-width: none; display: flex; flex-direction: column; }
+.plan-grid .plan-card.current { border-color: var(--up); box-shadow: 0 0 0 1px var(--up) inset; }
+.plan-grid .plan-list { flex: 1; }
+.plan-badge { display: inline-block; font-size: .7rem; font-weight: 700; letter-spacing: .05em; padding: 2px 8px; border-radius: 999px; background: rgba(47,212,128,.15); color: var(--up); margin-bottom: 8px; }
+
 /* ---------- Top pick ---------- */
 .top-pick {
   border: 1px solid rgba(242,184,75,.4); background: linear-gradient(135deg, rgba(242,184,75,.1), transparent);
