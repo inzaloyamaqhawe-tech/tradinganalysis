@@ -787,6 +787,10 @@ async function checkExpiries() {
 }
 
 // ---- Startup ----
+if (!DEMO_MODE && ADMIN_KEY === 'change-me-admin-key') {
+  console.warn('[SECURITY WARNING] ADMIN_KEY is still the default value while running against a real database. Set a real ADMIN_KEY env var before selling access — anyone can currently activate/deactivate subscribers and read admin stats.');
+}
+
 store.init()
   .then(() => pollAllAndStore())
   .then(() => {
