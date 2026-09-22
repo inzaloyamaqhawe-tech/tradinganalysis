@@ -218,9 +218,33 @@ async function getCandlesFor(instrument, timeframe = '1h') {
 // demo/test mode isn't dependent on a live recompute succeeding at the exact
 // moment they check (a transient upstream hiccup no longer means "no data").
 let insightCache = {};
+// Multi-timeframe context for the SMC strategy (signals.js/smc.js): 4H for
+// direction, 1H (the same `candles` the rest of the engine already uses)
+// for the key zone, 15min for entry confirmation. Crypto only, deliberately
+// — crypto's exchange candle API is free and uncapped at any timeframe, but
+// FX/gold's is Twelve Data's free tier (800 requests/day). This runs once
+// per market per 10-minute poll cycle (trackSignals), so two extra
+// timeframes across all 4 FX/gold markets would add ~1,150 calls/day on
+// top of the ~576/day the existing 1h polling already uses — enough to
+// exhaust the daily quota and break the FX chart feature that already
+// depends on it. Crypto has no such ceiling, so it's the only place this
+// runs; FX/gold signals simply fall back to the regime-based engine, same
+// as before this feature existed.
 async function computeSignal(instrument) {
   const candles = await getCandlesFor(instrument);
-  return runEngine(candles);
+  let smcCtx = null;
+  if (CRYPTO_KEYS.has(instrument)) {
+    try {
+      const [htf, ltf] = await Promise.all([
+        getCandlesFor(instrument, '4h'),
+        getCandlesFor(instrument, '15m'),
+      ]);
+      smcCtx = { htf, mtf: candles, ltf };
+    } catch (e) {
+      // SMC context is a bonus layer, never a hard dependency — the regime-based engine still works without it.
+    }
+  }
+  return runEngine(candles, smcCtx);
 }
 async function getCachedInsight(instrument) {
   if (insightCache[instrument]) return insightCache[instrument];

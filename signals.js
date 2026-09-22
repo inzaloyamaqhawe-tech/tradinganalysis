@@ -6,6 +6,7 @@
 // module docstring for the full rationale.
 
 const { detectPatterns } = require('./patterns');
+const { detectSmcSetup } = require('./smc');
 
 const ATR_PERIOD = 14;
 const ATR_BASELINE_PERIOD = 40;
@@ -163,6 +164,7 @@ const STRATEGY_LABEL = {
   BRK: 'Volatility breakout',
   MREV: 'Range mean-reversion',
   PATTERN: 'Classic chart pattern',
+  SMC: 'Smart Money Concepts (multi-timeframe order block/FVG)',
 };
 
 // Plain-language, non-jargon explanations of *why* a signal appeared — the
@@ -170,7 +172,7 @@ const STRATEGY_LABEL = {
 // "ATR-relative rejection" means. Kept separate from STRATEGY_LABEL (the
 // technical name) so the UI can show both: the name for credibility, the
 // explanation for understanding.
-function explainSignal(strategy, side, regime, patternMeta) {
+function explainSignal(strategy, side, regime, patternMeta, smcMeta) {
   const dir = side === 'BUY' ? 'up' : 'down';
   const rangeSide = side === 'BUY' ? 'range low' : 'range high';
   switch (strategy) {
@@ -184,6 +186,11 @@ function explainSignal(strategy, side, regime, patternMeta) {
       return `Price wicked beyond the recent trading range and then rejected back inside it, suggesting the extreme was overextended and a move back toward the middle of the range is likely.`;
     case 'PATTERN':
       return `A ${PATTERN_LABEL[patternMeta?.name] || 'chart pattern'} has formed and broken out, which historically tends to continue toward its measured-move target.`;
+    case 'SMC': {
+      const zoneWord = smcMeta?.zoneKind === 'fvg' ? 'fair value gap' : 'order block';
+      const confluenceNote = smcMeta?.confluence ? ' Both an order block and a fair value gap line up in the same zone, which is stronger confluence than either alone.' : '';
+      return `The higher timeframe is structurally ${dir === 'up' ? 'bullish' : 'bearish'} (higher highs and higher lows${dir === 'down' ? ' — reversed, lower highs and lower lows' : ''}). Price pulled back into a ${zoneWord} left behind by an earlier institutional-style move, then reclaimed it with a decisive candle — a classic higher-timeframe-direction, lower-timeframe-entry setup.${confluenceNote}`;
+    }
     default:
       return 'No clear setup right now.';
   }
@@ -213,7 +220,7 @@ const PATTERN_LABEL = {
 // stays ATR-relative, so it self-scales per asset instead of using a fixed
 // dollar/pip distance — a $0.07 DOGE move and a $4000 XAU move both get a
 // stop sized to *that instrument's own* recent volatility.
-const STRATEGY_SL_ATR = { CRT: 1.0, TREND: 1.2, BRK: 1.5, MREV: 1.0, PATTERN: 1.3 };
+const STRATEGY_SL_ATR = { CRT: 1.0, TREND: 1.2, BRK: 1.5, MREV: 1.0, PATTERN: 1.3, SMC: 1.3 };
 const RISK_REWARD_TO_TP4 = 2; // 1 : 2
 
 function decimalsFor(price) {
@@ -279,14 +286,31 @@ function computeConfidence(strategy, regime, closed, atrNow, atrBaseline) {
 // Runs the full engine on a chronological array of {open,high,low,close}
 // candles and returns a display-ready result. Framed as market-structure
 // insight, not a buy/sell instruction — the user makes their own call.
-function runEngine(closed) {
+//
+// `smcCtx`, when given, is { htf, mtf, ltf } — chronological candle arrays
+// for a higher, matching, and lower timeframe (conventionally 4h/1h/15m).
+// It's optional and best-effort: without it (or wherever it doesn't
+// confirm), the engine falls straight back to the regime-based strategies
+// below, unchanged.
+function runEngine(closed, smcCtx) {
   const { regime, atrNow, atrBaseline } = classifyRegime(closed);
   if (regime === 'NO_DATA') {
     return { signal: 'HOLD', regime, strategy: null, confidence: null, note: 'Gathering data — check back soon for a clearer read.', patterns: [] };
   }
 
   const patterns = detectPatterns(closed);
-  const { strategy, signal, patternMeta } = selectSignal(closed, regime, atrNow, atrBaseline, patterns);
+
+  // A confirmed 4H-biased, 1H-zoned, 15min-confirmed setup is inherently
+  // higher conviction than a single-timeframe regime read, so when it
+  // fires it takes priority over the regime-based strategies below.
+  const smcResult = smcCtx ? detectSmcSetup(smcCtx) : null;
+  let strategy, signal, patternMeta;
+  if (smcResult) {
+    strategy = 'SMC';
+    signal = { side: smcResult.side };
+  } else {
+    ({ strategy, signal, patternMeta } = selectSignal(closed, regime, atrNow, atrBaseline, patterns));
+  }
 
   if (!signal) {
     // No strategy fired at all — still worth mentioning a pattern that's
@@ -305,7 +329,9 @@ function runEngine(closed) {
 
   const explicitTarget = strategy === 'PATTERN' ? patternMeta.target : null;
   const levels = computeLevels(closed.at(-1).close, signal.side, atrNow, strategy, explicitTarget);
-  let confidence = strategy === 'PATTERN' ? 70 : computeConfidence(strategy, regime, closed, atrNow, atrBaseline);
+  let confidence = strategy === 'PATTERN' ? 70
+    : strategy === 'SMC' ? (smcResult.confluence ? 82 : 75)
+    : computeConfidence(strategy, regime, closed, atrNow, atrBaseline);
 
   // Confluence: an independently-detected pattern agreeing with the fired
   // strategy's direction is corroborating evidence — bump confidence rather
@@ -322,7 +348,7 @@ function runEngine(closed) {
   const subject = strategy === 'PATTERN'
     ? `${PATTERN_LABEL[patternMeta.name]} (measured-move target ${round(patternMeta.target)})`
     : STRATEGY_LABEL[strategy];
-  const explanation = explainSignal(strategy, signal.side, regime, patternMeta);
+  const explanation = explainSignal(strategy, signal.side, regime, patternMeta, smcResult);
   const invalidation = invalidationNote(strategy, signal.side, levels);
   return {
     signal: signal.side,
