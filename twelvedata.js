@@ -29,4 +29,26 @@ async function getCandles(symbol, interval = '1h', outputsize = 100) {
     .reverse();
 }
 
-module.exports = { getCandles, isConfigured: configured };
+// Real intraday quote (last price + % change vs. previous close), for the
+// live-ticking dashboard price — one batched call for however many symbols
+// are given, not one call each, since the free tier is a shared daily
+// quota. Frankfurter (the free, no-key fallback used when this isn't
+// configured) returns the ECB's once-a-day reference rate, which reads as
+// a permanently flat 0.00% change all day; this is what actually moves.
+async function getQuotes(symbols) {
+  const params = new URLSearchParams({ symbol: symbols.join(','), apikey: process.env.TWELVEDATA_API_KEY });
+  const res = await fetch(`https://api.twelvedata.com/quote?${params}`);
+  const json = await res.json();
+  // A single symbol returns the quote object directly; multiple symbols
+  // return { [symbol]: quote, ... } — normalize to always be the latter.
+  const bySymbol = symbols.length === 1 ? { [symbols[0]]: json } : json;
+  const out = {};
+  for (const symbol of symbols) {
+    const q = bySymbol[symbol];
+    if (!q || q.status === 'error' || q.close == null) continue;
+    out[symbol] = { price: parseFloat(q.close), changePct: parseFloat(q.percent_change) };
+  }
+  return out;
+}
+
+module.exports = { getCandles, getQuotes, isConfigured: configured };

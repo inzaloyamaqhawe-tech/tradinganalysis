@@ -42,17 +42,59 @@ if (DEMO_MODE) {
 }
 
 // ---- Instruments ----
+// Every pair here is verified tradeable on BOTH Crypto.com (our backend
+// candle/signal source) and Binance (the live WebSocket ticker/kline
+// source — see BINANCE_SYMBOL in public/js/app.js), sorted roughly by
+// 24h volume on Crypto.com. Picking pairs off just one exchange's list
+// risked a "live" card that's actually still on the 30-second poll because
+// Binance doesn't carry it — this list is the intersection, so "all from
+// Binance" is actually true for every one of these.
 const CRYPTO_INSTRUMENTS = [
   { key: 'BTC_USDT', label: 'BTC/USDT' },
   { key: 'ETH_USDT', label: 'ETH/USDT' },
   { key: 'SOL_USDT', label: 'SOL/USDT' },
   { key: 'XRP_USDT', label: 'XRP/USDT' },
+  { key: 'ARB_USDT', label: 'ARB/USDT' },
   { key: 'DOGE_USDT', label: 'DOGE/USDT' },
   { key: 'ADA_USDT', label: 'ADA/USDT' },
-  { key: 'AVAX_USDT', label: 'AVAX/USDT' },
-  { key: 'LINK_USDT', label: 'LINK/USDT' },
-  { key: 'DOT_USDT', label: 'DOT/USDT' },
+  { key: 'BCH_USDT', label: 'BCH/USDT' },
+  { key: 'AAVE_USDT', label: 'AAVE/USDT' },
   { key: 'LTC_USDT', label: 'LTC/USDT' },
+  { key: 'NEAR_USDT', label: 'NEAR/USDT' },
+  { key: 'SUI_USDT', label: 'SUI/USDT' },
+  { key: 'AVAX_USDT', label: 'AVAX/USDT' },
+  { key: 'DOT_USDT', label: 'DOT/USDT' },
+  { key: 'UNI_USDT', label: 'UNI/USDT' },
+  { key: 'LINK_USDT', label: 'LINK/USDT' },
+  { key: 'TRUMP_USDT', label: 'TRUMP/USDT' },
+  { key: 'SHIB_USDT', label: 'SHIB/USDT' },
+  { key: 'HBAR_USDT', label: 'HBAR/USDT' },
+  { key: 'FIL_USDT', label: 'FIL/USDT' },
+  { key: 'PAXG_USDT', label: 'PAXG/USDT' },
+  { key: 'PEPE_USDT', label: 'PEPE/USDT' },
+  { key: 'PYTH_USDT', label: 'PYTH/USDT' },
+  { key: 'XLM_USDT', label: 'XLM/USDT' },
+  { key: 'PUMP_USDT', label: 'PUMP/USDT' },
+  { key: 'WLD_USDT', label: 'WLD/USDT' },
+  { key: 'QNT_USDT', label: 'QNT/USDT' },
+  { key: 'FET_USDT', label: 'FET/USDT' },
+  { key: 'VIRTUAL_USDT', label: 'VIRTUAL/USDT' },
+  { key: 'BONK_USDT', label: 'BONK/USDT' },
+  { key: 'INJ_USDT', label: 'INJ/USDT' },
+  { key: 'OP_USDT', label: 'OP/USDT' },
+  { key: 'SEI_USDT', label: 'SEI/USDT' },
+  { key: 'WIF_USDT', label: 'WIF/USDT' },
+  { key: 'ATOM_USDT', label: 'ATOM/USDT' },
+  { key: 'LDO_USDT', label: 'LDO/USDT' },
+  { key: 'PENGU_USDT', label: 'PENGU/USDT' },
+  { key: 'APT_USDT', label: 'APT/USDT' },
+  { key: 'ONDO_USDT', label: 'ONDO/USDT' },
+  { key: 'APE_USDT', label: 'APE/USDT' },
+  { key: 'VET_USDT', label: 'VET/USDT' },
+  { key: 'ETC_USDT', label: 'ETC/USDT' },
+  { key: 'CRV_USDT', label: 'CRV/USDT' },
+  { key: 'XAUT_USDT', label: 'XAUT/USDT' },
+  { key: 'ENA_USDT', label: 'ENA/USDT' },
 ];
 // kind 'fiat': live tick via Frankfurter (base->quote). kind 'metal': via
 // gold-api.com. twelveDataSymbol: real candle feed once TWELVEDATA_API_KEY
@@ -110,22 +152,46 @@ async function pollCryptoCandles() {
 
 async function pollForex() {
   const rows = [];
-  for (const fx of FX_INSTRUMENTS) {
+
+  // Fiat pairs: one batched Twelve Data quote call covers all of them (real
+  // intraday % change), instead of the Frankfurter fallback's once-a-day
+  // ECB reference rate — which never moves intraday, so its % change reads
+  // as a permanently flat 0.00% no matter how often we poll it.
+  const fiatInstruments = FX_INSTRUMENTS.filter(fx => fx.kind === 'fiat');
+  let twelveDataQuotes = {};
+  if (twelveData.isConfigured()) {
+    try { twelveDataQuotes = await twelveData.getQuotes(fiatInstruments.map(fx => fx.twelveDataSymbol)); }
+    catch (e) { console.error('Twelve Data quote poll failed, falling back to Frankfurter', e.message); }
+  }
+  for (const fx of fiatInstruments) {
     try {
-      let price;
-      if (fx.kind === 'metal') {
-        // Works fine unauthenticated too — the key just gives more headroom
-        // if gold-api.com ever rate-limits anonymous requests.
-        const res = await fetch('https://api.gold-api.com/price/XAU', {
-          headers: process.env.GOLD_API_KEY ? { 'x-api-key': process.env.GOLD_API_KEY } : {},
-        });
-        const json = await res.json();
-        price = json?.price;
-      } else {
-        const res = await fetch(`https://api.frankfurter.dev/v1/latest?base=${fx.base}&symbols=${fx.quote}`);
-        const json = await res.json();
-        price = json?.rates?.[fx.quote];
+      const tdQuote = twelveDataQuotes[fx.twelveDataSymbol];
+      if (tdQuote && isFinite(tdQuote.price)) {
+        latestCache[fx.key] = { price: tdQuote.price, changePct: isFinite(tdQuote.changePct) ? tdQuote.changePct : 0, updatedAt: new Date().toISOString() };
+        rows.push({ instrument: fx.key, price: tdQuote.price });
+        continue;
       }
+      const res = await fetch(`https://api.frankfurter.dev/v1/latest?base=${fx.base}&symbols=${fx.quote}`);
+      const json = await res.json();
+      const price = json?.rates?.[fx.quote];
+      if (isFinite(price)) {
+        const prev = latestCache[fx.key]?.price;
+        const changePct = prev ? ((price - prev) / prev) * 100 : 0;
+        latestCache[fx.key] = { price, changePct, updatedAt: new Date().toISOString() };
+        rows.push({ instrument: fx.key, price });
+      }
+    } catch (e) { console.error(`${fx.key} poll failed`, e.message); }
+  }
+
+  for (const fx of FX_INSTRUMENTS.filter(fx => fx.kind === 'metal')) {
+    try {
+      // Works fine unauthenticated too — the key just gives more headroom
+      // if gold-api.com ever rate-limits anonymous requests.
+      const res = await fetch('https://api.gold-api.com/price/XAU', {
+        headers: process.env.GOLD_API_KEY ? { 'x-api-key': process.env.GOLD_API_KEY } : {},
+      });
+      const json = await res.json();
+      const price = json?.price;
       if (isFinite(price)) {
         const prev = latestCache[fx.key]?.price;
         const changePct = prev ? ((price - prev) / prev) * 100 : 0;

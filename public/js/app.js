@@ -214,9 +214,14 @@ document.getElementById('currencySelect')?.addEventListener('change', async (e) 
   } catch (e) { altPrice.textContent = ''; }
 });
 
-// ---------- Dashboard: live prices ----------
-const priceGrid = document.getElementById('priceGrid');
+// ---------- Dashboard: live prices (table, searchable, paginated) ----------
+const priceGrid = document.getElementById('priceGrid'); // <tbody>
 const statUp = document.getElementById('statUp');
+const marketSearchInput = document.getElementById('marketSearch');
+const marketSearchCount = document.getElementById('marketSearchCount');
+const marketPagination = document.getElementById('marketPagination');
+const MARKETS_PAGE_SIZE = 25;
+let marketPage = 1;
 
 function fmtPrice(p) {
   if (p == null) return '—';
@@ -225,43 +230,90 @@ function fmtPrice(p) {
 
 let lastPricesData = null; // cached /api/prices result, reused by the symbol ribbon + side panel
 
+function filteredMarketAssets() {
+  if (!lastPricesData) return [];
+  const q = marketSearchInput.value.trim().toLowerCase();
+  if (!q) return lastPricesData.assets;
+  return lastPricesData.assets.filter(a => a.label.toLowerCase().includes(q) || a.key.toLowerCase().includes(q));
+}
+
+function marketRowHtml(a) {
+  const cls = a.changePct > 0.001 ? 'up' : a.changePct < -0.001 ? 'down' : 'flat';
+  const arrow = a.changePct > 0.001 ? '▲' : a.changePct < -0.001 ? '▼' : '·';
+  const chg = a.changePct != null ? `${arrow} ${Math.abs(a.changePct).toFixed(2)}%` : 'loading…';
+  return `<tr class="market-row" data-key="${a.key}" data-label="${a.label}">
+    <td><span class="label">${a.label}</span></td>
+    <td><span class="price">${a.price != null ? fmtPrice(a.price) : '…'}</span></td>
+    <td><span class="chg ${cls}">${chg}</span></td>
+  </tr>`;
+}
+
+function renderMarketPagination(totalPages) {
+  if (totalPages <= 1) { marketPagination.innerHTML = ''; return; }
+  const btn = (label, page, opts = {}) => `<button class="page-btn ${opts.active ? 'active' : ''}" data-page="${page}" ${opts.disabled ? 'disabled' : ''}>${label}</button>`;
+  let html = btn('← Prev', marketPage - 1, { disabled: marketPage <= 1 });
+  for (let p = 1; p <= totalPages; p++) html += btn(String(p), p, { active: p === marketPage });
+  html += btn('Next →', marketPage + 1, { disabled: marketPage >= totalPages });
+  marketPagination.innerHTML = html;
+  marketPagination.querySelectorAll('[data-page]').forEach(b => b.addEventListener('click', () => {
+    const p = parseInt(b.dataset.page, 10);
+    if (p >= 1 && p <= totalPages) { marketPage = p; renderMarketTable(); }
+  }));
+}
+
+function renderMarketTable() {
+  const filtered = filteredMarketAssets();
+  const totalPages = Math.max(1, Math.ceil(filtered.length / MARKETS_PAGE_SIZE));
+  if (marketPage > totalPages) marketPage = totalPages;
+  const start = (marketPage - 1) * MARKETS_PAGE_SIZE;
+  const pageAssets = filtered.slice(start, start + MARKETS_PAGE_SIZE);
+
+  priceGrid.innerHTML = pageAssets.length
+    ? pageAssets.map(marketRowHtml).join('')
+    : `<tr><td colspan="3" class="note">No markets match "${marketSearchInput.value}".</td></tr>`;
+  priceGrid.querySelectorAll('.market-row').forEach(el => el.addEventListener('click', () => openChart(el.dataset.key, el.dataset.label)));
+
+  marketSearchCount.textContent = marketSearchInput.value.trim()
+    ? `${filtered.length} match${filtered.length === 1 ? '' : 'es'}`
+    : '';
+  renderMarketPagination(totalPages);
+}
+
+marketSearchInput.addEventListener('input', () => { marketPage = 1; renderMarketTable(); });
+
 async function loadPrices() {
   try {
     const res = await fetch('/api/prices');
     const data = await res.json();
     lastPricesData = data;
-    let upCount = 0;
-    priceGrid.innerHTML = data.assets.map(a => {
-      const cls = a.changePct > 0.001 ? 'up' : a.changePct < -0.001 ? 'down' : 'flat';
-      if (a.changePct > 0) upCount++;
-      const arrow = a.changePct > 0.001 ? '▲' : a.changePct < -0.001 ? '▼' : '·';
-      const chg = a.changePct != null ? `${arrow} ${Math.abs(a.changePct).toFixed(2)}%` : 'loading…';
-      return `<button class="card" data-key="${a.key}" data-label="${a.label}">
-        <div class="label">${a.label} <span class="hint">view chart →</span></div>
-        <div class="price">${a.price != null ? fmtPrice(a.price) : '…'}</div>
-        <div class="chg ${cls}">${chg}</div>
-      </button>`;
-    }).join('');
+    const upCount = data.assets.filter(a => a.changePct > 0).length;
     statUp.textContent = `${upCount}/${data.assets.length}`;
-    priceGrid.querySelectorAll('.card').forEach(el => el.addEventListener('click', () => openChart(el.dataset.key, el.dataset.label)));
+    renderMarketTable();
     if (chartModal.classList.contains('open')) renderSymbolRibbon();
   } catch (e) {
-    priceGrid.innerHTML = '<div class="card">Failed to load prices — retrying…</div>';
+    priceGrid.innerHTML = '<tr><td colspan="3" class="note">Failed to load prices — retrying…</td></tr>';
   }
 }
 loadPrices();
 setInterval(loadPrices, 30000);
 
 // ---------- Live crypto ticks via Binance's free public WebSocket ----------
-// Binance is crypto-only (no FX/gold) — GBP/EUR/JPY/XAU still come from the
-// 30s poll above (Frankfurter/gold-api/Twelve Data via our own server,
-// untouched). This is purely an additive, faster-moving layer for the 10
-// crypto cards so the dashboard visibly ticks instead of just refreshing a
-// static number every 30 seconds.
+// Every one of these is verified tradeable on both Crypto.com (our backend
+// candle/signal source — see server.js's CRYPTO_INSTRUMENTS) and Binance
+// (this live ticker/kline source), so every crypto row genuinely ticks live
+// off Binance, not just a curated subset. EUR/GBP/JPY/XAU still come from
+// the 30s poll above (Twelve Data via our own server, untouched) — Binance
+// has no FX/gold market at all.
 const BINANCE_SYMBOL = {
-  BTC_USDT: 'btcusdt', ETH_USDT: 'ethusdt', SOL_USDT: 'solusdt', XRP_USDT: 'xrpusdt',
-  DOGE_USDT: 'dogeusdt', ADA_USDT: 'adausdt', AVAX_USDT: 'avaxusdt', LINK_USDT: 'linkusdt',
-  DOT_USDT: 'dotusdt', LTC_USDT: 'ltcusdt',
+  BTC_USDT: 'btcusdt', ETH_USDT: 'ethusdt', SOL_USDT: 'solusdt', XRP_USDT: 'xrpusdt', ARB_USDT: 'arbusdt',
+  DOGE_USDT: 'dogeusdt', ADA_USDT: 'adausdt', BCH_USDT: 'bchusdt', AAVE_USDT: 'aaveusdt', LTC_USDT: 'ltcusdt',
+  NEAR_USDT: 'nearusdt', SUI_USDT: 'suiusdt', AVAX_USDT: 'avaxusdt', DOT_USDT: 'dotusdt', UNI_USDT: 'uniusdt',
+  LINK_USDT: 'linkusdt', TRUMP_USDT: 'trumpusdt', SHIB_USDT: 'shibusdt', HBAR_USDT: 'hbarusdt', FIL_USDT: 'filusdt',
+  PAXG_USDT: 'paxgusdt', PEPE_USDT: 'pepeusdt', PYTH_USDT: 'pythusdt', XLM_USDT: 'xlmusdt', PUMP_USDT: 'pumpusdt',
+  WLD_USDT: 'wldusdt', QNT_USDT: 'qntusdt', FET_USDT: 'fetusdt', VIRTUAL_USDT: 'virtualusdt', BONK_USDT: 'bonkusdt',
+  INJ_USDT: 'injusdt', OP_USDT: 'opusdt', SEI_USDT: 'seiusdt', WIF_USDT: 'wifusdt', ATOM_USDT: 'atomusdt',
+  LDO_USDT: 'ldousdt', PENGU_USDT: 'penguusdt', APT_USDT: 'aptusdt', ONDO_USDT: 'ondousdt', APE_USDT: 'apeusdt',
+  VET_USDT: 'vetusdt', ETC_USDT: 'etcusdt', CRV_USDT: 'crvusdt', XAUT_USDT: 'xautusdt', ENA_USDT: 'enausdt',
 };
 const BINANCE_TO_KEY = Object.fromEntries(Object.entries(BINANCE_SYMBOL).map(([key, sym]) => [sym.toUpperCase(), key]));
 
@@ -270,10 +322,16 @@ function setLiveBadge(connected) {
 }
 
 function updateCardLive(key, price, changePct) {
-  const card = priceGrid.querySelector(`.card[data-key="${key}"]`);
-  if (!card || price == null || !isFinite(price)) return;
-  const priceEl = card.querySelector('.price');
-  const chgEl = card.querySelector('.chg');
+  // Keep the cached snapshot (used by the symbol ribbon + chart side panel,
+  // and re-rendered on the next search/page change) in sync regardless of
+  // whether this row happens to be on the currently displayed page.
+  const asset = lastPricesData?.assets.find(a => a.key === key);
+  if (asset) { asset.price = price; asset.changePct = changePct; }
+
+  const row = priceGrid.querySelector(`.market-row[data-key="${key}"]`);
+  if (!row || price == null || !isFinite(price)) return;
+  const priceEl = row.querySelector('.price');
+  const chgEl = row.querySelector('.chg');
   const prevText = priceEl.textContent;
   const nextText = fmtPrice(price);
   if (prevText === nextText) return; // no visible change — skip the animation churn
@@ -287,14 +345,9 @@ function updateCardLive(key, price, changePct) {
     chgEl.textContent = `${arrow} ${Math.abs(changePct).toFixed(2)}%`;
   }
 
-  // Keep the cached snapshot (used by the symbol ribbon + chart side panel) in sync too.
-  const asset = lastPricesData?.assets.find(a => a.key === key);
-  if (asset) { asset.price = price; asset.changePct = changePct; }
-
   priceEl.classList.remove('flash-up', 'flash-down');
   void priceEl.offsetWidth; // restart the CSS transition
   priceEl.classList.add(wentUp ? 'flash-up' : 'flash-down');
-  card.classList.remove('ticked'); void card.offsetWidth; card.classList.add('ticked');
   setTimeout(() => priceEl.classList.remove('flash-up', 'flash-down'), 50);
 }
 

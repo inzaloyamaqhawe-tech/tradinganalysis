@@ -83,8 +83,20 @@
     </div>
 
     <h2 class="section-title">All markets <span class="live-badge" id="liveBadge"><span class="live-dot"></span>LIVE</span></h2>
-    <p class="section-sub">Crypto ticks live via Binance's public stream, updating in real time. GBP/EUR/JPY/XAU refresh every 30 seconds.</p>
-    <div class="grid" id="priceGrid"></div>
+    <p class="section-sub">Crypto ticks live via Binance's public stream, updating in real time. EUR/GBP/JPY/XAU refresh every 30 seconds via Twelve Data.</p>
+    <div class="row" style="margin-bottom:10px;">
+      <input type="text" id="marketSearch" placeholder="Search markets… (e.g. BTC, XAU, DOGE)" style="max-width:320px;" />
+      <span class="note" id="marketSearchCount" style="margin:0;"></span>
+    </div>
+    <div class="market-table-wrap">
+      <table class="market-table">
+        <thead>
+          <tr><th>Market</th><th>Price</th><th>24h Change</th></tr>
+        </thead>
+        <tbody id="priceGrid"></tbody>
+      </table>
+    </div>
+    <div class="row" id="marketPagination" style="justify-content:center; margin-top:14px;"></div>
   </section>
 
   <!-- INSIGHTS -->

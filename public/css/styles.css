@@ -114,6 +114,30 @@ img { max-width: 100%; }
 .card .price { font-size: 1.35rem; font-weight: 700; margin-top: 8px; font-variant-numeric: tabular-nums; }
 .card .chg { font-size: .85rem; margin-top: 3px; font-weight: 600; }
 
+/* ---------- Markets table (rows, sticky header, paginated) ---------- */
+.market-table-wrap { max-height: 640px; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--radius); }
+.market-table { width: 100%; border-collapse: collapse; }
+.market-table thead th {
+  position: sticky; top: 0; z-index: 2; background: var(--panel-2); text-align: left;
+  color: var(--muted); font-size: .74rem; font-weight: 700; text-transform: uppercase; letter-spacing: .05em;
+  padding: 10px 14px; border-bottom: 1px solid var(--border);
+}
+.market-row { cursor: pointer; transition: background .15s ease; }
+.market-row:hover { background: rgba(79,140,255,.06); }
+.market-row td { padding: 12px 14px; border-bottom: 1px solid var(--border); }
+.market-row .label { font-weight: 600; display: flex; align-items: center; gap: 8px; }
+.market-row .price { font-size: 1.05rem; font-weight: 700; font-variant-numeric: tabular-nums; transition: color .9s ease; }
+.market-row .price.flash-up { color: var(--up); transition: color 0s; }
+.market-row .price.flash-down { color: var(--down); transition: color 0s; }
+.market-row .chg { font-size: .88rem; font-weight: 600; }
+.market-row:last-child td { border-bottom: none; }
+.page-btn {
+  background: var(--panel-2); border: 1px solid var(--border); color: var(--text);
+  border-radius: 8px; padding: 6px 12px; font-size: .85rem; cursor: pointer;
+}
+.page-btn.active { border-color: var(--brand); color: var(--brand); }
+.page-btn:disabled { opacity: .4; cursor: default; }
+
 /* ---------- Live ticker feed (Binance WS) ---------- */
 .live-badge {
   display: inline-flex; align-items: center; gap: 5px; font-size: .68rem; font-weight: 800;
