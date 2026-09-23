@@ -100,7 +100,7 @@ async function pollCryptoCandles() {
       const json = await res.json();
       const data = json?.result?.data || [];
       cryptoCandleCache[key] = data.map(c => ({
-        open: parseFloat(c.o), high: parseFloat(c.h), low: parseFloat(c.l), close: parseFloat(c.c), time: c.t,
+        open: parseFloat(c.o), high: parseFloat(c.h), low: parseFloat(c.l), close: parseFloat(c.c), time: c.t, volume: parseFloat(c.v) || 0,
       }));
     } catch (e) {
       console.error(`candlestick poll failed for ${key}`, e.message);
@@ -182,7 +182,7 @@ async function fetchCryptoCandles(key, timeframe) {
   const res = await fetch(`https://api.crypto.com/exchange/v1/public/get-candlestick?instrument_name=${key}&timeframe=${CRYPTO_TF_MAP[timeframe]}&count=100`);
   const json = await res.json();
   const data = json?.result?.data || [];
-  return data.map(c => ({ open: parseFloat(c.o), high: parseFloat(c.h), low: parseFloat(c.l), close: parseFloat(c.c), time: c.t }));
+  return data.map(c => ({ open: parseFloat(c.o), high: parseFloat(c.h), low: parseFloat(c.l), close: parseFloat(c.c), time: c.t, volume: parseFloat(c.v) || 0 }));
 }
 
 // Shared candle retrieval — crypto gets real candles straight from the
@@ -334,59 +334,92 @@ async function alertLevelTouch(sig, newLevels) {
   for (const r of recipients) sendMail(r.email, subject, body);
 }
 
-// ---- Track record: logs each new setup the engine surfaces, and resolves
-// open ones by walking real candle history every poll cycle. This is what
-// lets /api/performance show an honest, non-cherry-picked history (wins AND
-// losses), instead of just the live "current read".
+// ---- Track record: single-active-recommendation system. /api/insights
+// still shows a live read for every tracked market (a Premium+ user can
+// still go for their own pick — e.g. a 75%-confidence ETH/USD read — even
+// when a higher-confidence setup exists elsewhere); the DATABASE, and
+// therefore the Track Record page, only ever logs the single best/highest-
+// confidence setup found across ALL markets at a time, and only when
+// nothing is already pending. This is what "what did the system actually
+// recommend, and did it win" means for a track record: one call at a time,
+// timestamped, resolved before the next one is posted — not fourteen
+// markets' worth of simultaneous rows. Concretely:
+//   - At most one signal is ever open in the DB at once.
+//   - A brand new candidate is logged only once nothing is open (a pending
+//     recommendation is always resolved — win, loss, or invalidated —
+//     before the next one is considered, even if a higher-confidence setup
+//     shows up on a different market in the meantime).
+//   - Because posting is driven by server-side poll state, not by who's
+//     looking or when, two different users logging in at different times
+//     see the exact same Track Record — there's no per-visitor "pick".
 async function trackSignals() {
+  const results = {};
   for (const key of ALL_KEYS) {
-    let result;
-    try { result = await computeSignal(key); insightCache[key] = result; } catch (e) { continue; }
+    try { results[key] = await computeSignal(key); insightCache[key] = results[key]; } catch (e) { /* leave this cycle's cache entry as-is */ }
+  }
 
-    const openForKey = (await store.getOpenSignals()).filter(s => s.instrument === key);
-    if (openForKey.length) {
-      let candles;
-      try { candles = await getCandlesFor(key); } catch (e) { candles = []; }
-      for (const sig of openForKey) {
-        if (!candles.length) continue;
-        const resolved = resolveSignalFromCandles(sig, candles);
-        const changed = JSON.stringify(resolved.hitHistory) !== JSON.stringify(sig.hit_history || [])
-          || resolved.bestLevel !== sig.best_level || resolved.status !== sig.status;
-        if (!changed) continue;
-        const patch = { hit_history: resolved.hitHistory, best_level: resolved.bestLevel };
-        if (resolved.status === 'closed') { patch.status = 'closed'; patch.outcome = resolved.outcome; patch.closed_at = resolved.closedAt; }
+  // ---- Resolve (or invalidate) whatever is currently logged as open. At
+  // most one row is ever open by construction, but this loop makes no
+  // assumption about that — it just resolves every open row it finds. ----
+  const openSignals = await store.getOpenSignals();
+  for (const sig of openSignals) {
+    const key = sig.instrument;
+    let candles;
+    try { candles = await getCandlesFor(key); } catch (e) { candles = []; }
+    if (!candles.length) continue;
 
-        const alertedLevels = new Set(sig.alerted_levels || []);
-        const newlyHitLevels = resolved.hitHistory.map(h => h.level).filter(l => !alertedLevels.has(l));
-        const newlyHitSL = resolved.slTouched && !alertedLevels.has('SL');
-        const touchLabels = [...newlyHitLevels, ...(newlyHitSL ? ['SL'] : [])];
-        if (touchLabels.length) {
-          await alertLevelTouch(sig, touchLabels);
-          patch.alerted_levels = [...alertedLevels, ...touchLabels];
-        }
-        await store.updateSignalOutcome(sig.id, patch);
+    const resolved = resolveSignalFromCandles(sig, candles);
+    const changed = JSON.stringify(resolved.hitHistory) !== JSON.stringify(sig.hit_history || [])
+      || resolved.bestLevel !== sig.best_level || resolved.status !== sig.status;
+    if (changed) {
+      const patch = { hit_history: resolved.hitHistory, best_level: resolved.bestLevel };
+      if (resolved.status === 'closed') { patch.status = 'closed'; patch.outcome = resolved.outcome; patch.closed_at = resolved.closedAt; }
+
+      const alertedLevels = new Set(sig.alerted_levels || []);
+      const newlyHitLevels = resolved.hitHistory.map(h => h.level).filter(l => !alertedLevels.has(l));
+      const newlyHitSL = resolved.slTouched && !alertedLevels.has('SL');
+      const touchLabels = [...newlyHitLevels, ...(newlyHitSL ? ['SL'] : [])];
+      if (touchLabels.length) {
+        await alertLevelTouch(sig, touchLabels);
+        patch.alerted_levels = [...alertedLevels, ...touchLabels];
       }
+      await store.updateSignalOutcome(sig.id, patch);
     }
 
-    if (result.signal !== 'HOLD' && result.levels) {
-      const latest = await store.getLatestSignalFor(key);
-      const sameOngoingSetup = latest && latest.status === 'open' && latest.side === result.signal && latest.strategy === result.strategy;
-      if (!sameOngoingSetup) {
-        if (latest && latest.status === 'open') {
-          // Structure changed before this setup resolved — close it out as invalidated rather than leaving it dangling.
-          await store.updateSignalOutcome(latest.id, { status: 'closed', outcome: 'INVALIDATED', closed_at: new Date().toISOString() });
-        }
-        const row = await store.logSignal({
-          instrument: key, strategy: result.strategy, regime: result.regime, side: result.signal,
-          entry: result.levels.entry, sl: result.levels.sl,
-          tp1: result.levels.tp1, tp2: result.levels.tp2, tp3: result.levels.tp3, tp4: result.levels.tp4,
-          confidence: result.confidence,
-        });
-        await alertNewSignal(row);
-        await store.updateSignalOutcome(row.id, { alerted_new: true });
+    // Still open after the candle walk above? Check whether the engine
+    // itself has moved on for this instrument — an open recommendation the
+    // engine no longer even sees is stale and shouldn't block the next
+    // pick indefinitely, regardless of whether it's still "the" pick.
+    const stillOpen = resolved.status !== 'closed';
+    if (stillOpen) {
+      const live = results[key];
+      const stillSameSetup = live && live.signal === sig.side && live.strategy === sig.strategy;
+      if (!stillSameSetup) {
+        await store.updateSignalOutcome(sig.id, { status: 'closed', outcome: 'INVALIDATED', closed_at: new Date().toISOString() });
       }
     }
   }
+
+  // ---- Post at most one new recommendation this cycle, and only when
+  // nothing is pending — the highest-confidence actionable setup across
+  // every tracked market, whichever instrument that happens to be. ----
+  const stillPending = (await store.getOpenSignals()).length > 0;
+  if (stillPending) return;
+
+  const actionable = ALL_KEYS
+    .map(key => ({ key, result: results[key] }))
+    .filter(({ result }) => result && result.signal !== 'HOLD' && result.levels && result.confidence != null);
+  if (!actionable.length) return;
+
+  const best = actionable.reduce((a, b) => (b.result.confidence > a.result.confidence ? b : a));
+  const row = await store.logSignal({
+    instrument: best.key, strategy: best.result.strategy, regime: best.result.regime, side: best.result.signal,
+    entry: best.result.levels.entry, sl: best.result.levels.sl,
+    tp1: best.result.levels.tp1, tp2: best.result.levels.tp2, tp3: best.result.levels.tp3, tp4: best.result.levels.tp4,
+    confidence: best.result.confidence,
+  });
+  await alertNewSignal(row);
+  await store.updateSignalOutcome(row.id, { alerted_new: true });
 }
 
 // A reached target (TP1-TP4) is a win even if the position later gave back

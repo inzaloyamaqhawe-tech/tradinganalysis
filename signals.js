@@ -6,7 +6,9 @@
 // module docstring for the full rationale.
 
 const { detectPatterns } = require('./patterns');
-const { detectSmcSetup } = require('./smc');
+const { detectSmcSetup, classifyStructure } = require('./smc');
+const { detectWyckoffSetup } = require('./wyckoff');
+const { detectVolatilityBreakout } = require('./volatility');
 
 const ATR_PERIOD = 14;
 const ATR_BASELINE_PERIOD = 40;
@@ -165,6 +167,8 @@ const STRATEGY_LABEL = {
   MREV: 'Range mean-reversion',
   PATTERN: 'Classic chart pattern',
   SMC: 'Smart Money Concepts (multi-timeframe order block/FVG)',
+  WYCKOFF: 'Wyckoff Spring/Upthrust (institutional liquidity sweep)',
+  VOLBRK: 'Volatility compression breakout (ATR/Donchian)',
 };
 
 // Plain-language, non-jargon explanations of *why* a signal appeared — the
@@ -172,7 +176,7 @@ const STRATEGY_LABEL = {
 // "ATR-relative rejection" means. Kept separate from STRATEGY_LABEL (the
 // technical name) so the UI can show both: the name for credibility, the
 // explanation for understanding.
-function explainSignal(strategy, side, regime, patternMeta, smcMeta) {
+function explainSignal(strategy, side, regime, patternMeta, smcMeta, wyckoffMeta, volMeta) {
   const dir = side === 'BUY' ? 'up' : 'down';
   const rangeSide = side === 'BUY' ? 'range low' : 'range high';
   switch (strategy) {
@@ -190,6 +194,15 @@ function explainSignal(strategy, side, regime, patternMeta, smcMeta) {
       const zoneWord = smcMeta?.zoneKind === 'fvg' ? 'fair value gap' : 'order block';
       const confluenceNote = smcMeta?.confluence ? ' Both an order block and a fair value gap line up in the same zone, which is stronger confluence than either alone.' : '';
       return `The higher timeframe is structurally ${dir === 'up' ? 'bullish' : 'bearish'} (higher highs and higher lows${dir === 'down' ? ' — reversed, lower highs and lower lows' : ''}). Price pulled back into a ${zoneWord} left behind by an earlier institutional-style move, then reclaimed it with a decisive candle — a classic higher-timeframe-direction, lower-timeframe-entry setup.${confluenceNote}`;
+    }
+    case 'WYCKOFF': {
+      const sweepWord = wyckoffMeta?.type === 'SPRING' ? 'below the range low' : 'above the range high';
+      const phaseWord = wyckoffMeta?.type === 'SPRING' ? 'accumulation' : 'distribution';
+      return `Price had been ranging (an ${phaseWord} phase), then briefly spiked ${sweepWord} on a burst of volume — a classic stop-hunt that grabs retail liquidity right before institutions push the real move — and immediately closed back inside the range. The next candle then broke decisively back through the sweep candle's own extreme, confirming the range is resolving ${dir}.`;
+    }
+    case 'VOLBRK': {
+      const ratio = volMeta?.volumeRatio != null ? volMeta.volumeRatio.toFixed(1) : 'well above';
+      return `Volatility had compressed into a tight range (recent ATR well below its longer-run average) — the calm that often precedes a real expansion. Price just broke out of that range on ${ratio}x normal volume, in the same direction as the higher-timeframe trend, which is the combination this setup specifically waits for rather than trading every quiet-range breakout.`;
     }
     default:
       return 'No clear setup right now.';
@@ -220,7 +233,7 @@ const PATTERN_LABEL = {
 // stays ATR-relative, so it self-scales per asset instead of using a fixed
 // dollar/pip distance — a $0.07 DOGE move and a $4000 XAU move both get a
 // stop sized to *that instrument's own* recent volatility.
-const STRATEGY_SL_ATR = { CRT: 1.0, TREND: 1.2, BRK: 1.5, MREV: 1.0, PATTERN: 1.3, SMC: 1.3 };
+const STRATEGY_SL_ATR = { CRT: 1.0, TREND: 1.2, BRK: 1.5, MREV: 1.0, PATTERN: 1.3, SMC: 1.3, WYCKOFF: 1.2, VOLBRK: 1.5 };
 const RISK_REWARD_TO_TP4 = 2; // 1 : 2
 
 function decimalsFor(price) {
@@ -300,14 +313,27 @@ function runEngine(closed, smcCtx) {
 
   const patterns = detectPatterns(closed);
 
-  // A confirmed 4H-biased, 1H-zoned, 15min-confirmed setup is inherently
-  // higher conviction than a single-timeframe regime read, so when it
-  // fires it takes priority over the regime-based strategies below.
-  const smcResult = smcCtx ? detectSmcSetup(smcCtx) : null;
+  // Priority cascade: Wyckoff (institutional accumulation/distribution
+  // liquidity sweep) -> SMC (multi-timeframe order block/FVG) -> ATR/
+  // Donchian compression breakout -> the original regime-based strategies.
+  // Each of the first three is a strict, deliberately rare-firing setup —
+  // when one fires it's inherently higher conviction than a single-
+  // timeframe regime read, so it takes priority. The regime-based cascade
+  // below is the everyday fallback, unchanged from before these existed.
+  const htfBias = smcCtx?.htf?.length ? classifyStructure(smcCtx.htf) : 'NEUTRAL';
+  const wyckoffResult = detectWyckoffSetup(closed);
+  const smcResult = !wyckoffResult && smcCtx ? detectSmcSetup(smcCtx) : null;
+  const volResult = !wyckoffResult && !smcResult ? detectVolatilityBreakout(closed, htfBias) : null;
   let strategy, signal, patternMeta;
-  if (smcResult) {
+  if (wyckoffResult) {
+    strategy = 'WYCKOFF';
+    signal = { side: wyckoffResult.side };
+  } else if (smcResult) {
     strategy = 'SMC';
     signal = { side: smcResult.side };
+  } else if (volResult) {
+    strategy = 'VOLBRK';
+    signal = { side: volResult.side };
   } else {
     ({ strategy, signal, patternMeta } = selectSignal(closed, regime, atrNow, atrBaseline, patterns));
   }
@@ -331,6 +357,8 @@ function runEngine(closed, smcCtx) {
   const levels = computeLevels(closed.at(-1).close, signal.side, atrNow, strategy, explicitTarget);
   let confidence = strategy === 'PATTERN' ? 70
     : strategy === 'SMC' ? (smcResult.confluence ? 82 : 75)
+    : strategy === 'WYCKOFF' ? 80
+    : strategy === 'VOLBRK' ? Math.max(60, Math.min(92, Math.round(55 + volResult.volumeRatio * 8)))
     : computeConfidence(strategy, regime, closed, atrNow, atrBaseline);
 
   // Confluence: an independently-detected pattern agreeing with the fired
@@ -348,7 +376,7 @@ function runEngine(closed, smcCtx) {
   const subject = strategy === 'PATTERN'
     ? `${PATTERN_LABEL[patternMeta.name]} (measured-move target ${round(patternMeta.target)})`
     : STRATEGY_LABEL[strategy];
-  const explanation = explainSignal(strategy, signal.side, regime, patternMeta, smcResult);
+  const explanation = explainSignal(strategy, signal.side, regime, patternMeta, smcResult, wyckoffResult, volResult);
   const invalidation = invalidationNote(strategy, signal.side, levels);
   return {
     signal: signal.side,
