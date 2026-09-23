@@ -9,6 +9,7 @@ const { detectPatterns } = require('./patterns');
 const { detectSmcSetup, classifyStructure } = require('./smc');
 const { detectWyckoffSetup } = require('./wyckoff');
 const { detectVolatilityBreakout } = require('./volatility');
+const { computeZones, explainZones } = require('./zones');
 
 const ATR_PERIOD = 14;
 const ATR_BASELINE_PERIOD = 40;
@@ -308,10 +309,21 @@ function computeConfidence(strategy, regime, closed, atrNow, atrBaseline) {
 function runEngine(closed, smcCtx) {
   const { regime, atrNow, atrBaseline } = classifyRegime(closed);
   if (regime === 'NO_DATA') {
-    return { signal: 'HOLD', regime, strategy: null, confidence: null, note: 'Gathering data — check back soon for a clearer read.', patterns: [] };
+    // Zones need far less history than the full regime engine (~14-20
+    // candles vs. 42+), so a market that hasn't built up enough history for
+    // a regime read yet can still often show zone context.
+    const zones = computeZones(closed);
+    return { signal: 'HOLD', regime, strategy: null, confidence: null, note: 'Gathering data — check back soon for a clearer read.', patterns: [], zones, zoneNote: explainZones(zones) };
   }
 
   const patterns = detectPatterns(closed);
+
+  // Structural buy/sell zones — computed every cycle regardless of whether
+  // any strategy actually fires, unlike everything below. This is standing
+  // context ("where would buyers/sellers plausibly step in on this chart
+  // right now"), not a trade call.
+  const zones = computeZones(closed);
+  const zoneNote = explainZones(zones);
 
   // Priority cascade: Wyckoff (institutional accumulation/distribution
   // liquidity sweep) -> SMC (multi-timeframe order block/FVG) -> ATR/
@@ -350,6 +362,8 @@ function runEngine(closed, smcCtx) {
       confidence: null,
       note: `Structure: ${regime.replace('_', ' ').toLowerCase()} — no clear directional setup right now.${formingNote} Informational only; conduct your own analysis before trading.`,
       patterns,
+      zones,
+      zoneNote,
     };
   }
 
@@ -388,6 +402,8 @@ function runEngine(closed, smcCtx) {
     invalidation,
     note: `${subject} suggests a ${biasWord} scenario in a ${regime.replace('_', ' ').toLowerCase()} structure (setup strength ${confidence}/100).${confluenceNote} Informational only — conduct your own analysis and risk assessment before making any trading decision.`,
     patterns,
+    zones,
+    zoneNote,
   };
 }
 

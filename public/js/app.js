@@ -631,9 +631,12 @@ function updateSidePanel(key, data) {
   document.getElementById('spLockedNote').style.display = data.premium ? 'none' : 'block';
 
   const explainBox = document.getElementById('spExplainBox');
-  if (data.premium && insight?.explanation) {
+  if (data.premium && (insight?.explanation || insight?.zoneNote)) {
     explainBox.style.display = 'block';
-    document.getElementById('spExplanation').textContent = insight.explanation;
+    document.getElementById('spExplanation').innerHTML = [
+      insight.explanation,
+      insight.zoneNote ? `<span style="color:#7ad1ff;">${insight.zoneNote}</span>` : null,
+    ].filter(Boolean).join('<br>');
     document.getElementById('spInvalidation').textContent = insight.invalidation || '';
     const aiBtn = document.getElementById('spAiExplainBtn');
     aiBtn.style.display = currentUser?.plan === 'elite' ? 'inline-block' : 'none';
@@ -958,7 +961,7 @@ function signalRowHtml(s, proTools) {
       </div>
       <div class="badge ${s.signal}">${BIAS_LABEL[s.signal]}${s.confidence != null ? ` · ${s.confidence}/100` : ''}</div>
       <div></div>
-      <div class="sig-note">${s.note}${s.explanation ? `<br><em>${s.explanation}</em>` : ''}</div>
+      <div class="sig-note">${s.note}${s.explanation ? `<br><em>${s.explanation}</em>` : ''}${s.zoneNote ? `<br><span style="color:#7ad1ff;">${s.zoneNote}</span>` : ''}</div>
       ${s.levels ? `
         <div class="levels-strip">
           <span class="level-chip sl">SL <b>${s.levels.sl}</b></span>
@@ -1018,7 +1021,7 @@ function renderInsights(data) {
         <div class="badge ${p.signal}">${p.confidence}/100</div>
       </div>
       <div class="regime" style="margin-bottom:8px;">${(p.regime || '').replace('_', ' ').toLowerCase()}${p.strategy ? ' · ' + p.strategy : ''}</div>
-      <div class="sig-note" style="margin-bottom:8px;">${p.note}${p.explanation ? `<br><em>${p.explanation}</em>` : ''}</div>
+      <div class="sig-note" style="margin-bottom:8px;">${p.note}${p.explanation ? `<br><em>${p.explanation}</em>` : ''}${p.zoneNote ? `<br><span style="color:#7ad1ff;">${p.zoneNote}</span>` : ''}</div>
       ${p.levels ? `
         <div class="levels-strip">
           <span class="level-chip sl">SL <b>${p.levels.sl}</b></span>
