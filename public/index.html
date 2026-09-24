@@ -66,8 +66,22 @@
         </div>
         <div id="authLoggedOut">
           <p class="note" style="margin-top:0;">One account, everywhere — no more retyping your email for pricing, insights or charts.</p>
-          <div class="row"><input type="email" id="authEmail" placeholder="you@example.com" /></div>
-          <div class="row" style="margin-top:8px;"><input type="password" id="authPassword" placeholder="Password (min 6 characters)" /></div>
+
+          <div class="row auth-signup-only"><input type="text" id="authFirstName" placeholder="First name" /></div>
+          <div class="row auth-signup-only" style="margin-top:8px;"><input type="text" id="authLastName" placeholder="Last name" /></div>
+          <div class="row auth-signup-only" style="margin-top:8px;"><input type="text" id="authUsername" placeholder="Username" /></div>
+
+          <div class="row" style="margin-top:8px;"><input type="text" id="authEmail" placeholder="you@example.com" /></div>
+
+          <div class="row password-row" style="margin-top:8px;">
+            <input type="password" id="authPassword" placeholder="Password (min 6 characters)" />
+            <button type="button" class="ghost pw-toggle" data-target="authPassword">Show</button>
+          </div>
+          <div class="row password-row auth-signup-only" style="margin-top:8px;">
+            <input type="password" id="authConfirmPassword" placeholder="Confirm password" />
+            <button type="button" class="ghost pw-toggle" data-target="authConfirmPassword">Show</button>
+          </div>
+
           <div class="row" style="margin-top:10px;"><button id="authSubmitBtn">Create free account</button></div>
           <div id="authMsg" class="note"></div>
         </div>

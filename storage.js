@@ -4,6 +4,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { atLeast } = require('./plans');
 
 // Kept generous so the multi-strategy engine (signals.js) has enough raw
 // samples to bucket into synthetic candles for instruments without a real
@@ -16,6 +17,9 @@ function createMemoryStorage() {
   const sessions = new Map(); // token -> email
   const signalLog = []; // { id, instrument, strategy, regime, side, entry, sl, tp1-4, confidence, status, outcome, best_level, created_at, closed_at, alerted_new, alerted_levels }
   let signalLogSeq = 1;
+  const notifications = []; // { id, signal_id, type, min_plan, title, body, instrument, created_at }
+  const notificationReads = new Set(); // `${email}:${notificationId}`
+  let notificationSeq = 1;
 
   // Persist accounts/sessions/signal history to a local JSON file so a
   // simple process restart (idle spin-down/wake, a crash) doesn't force
@@ -165,8 +169,29 @@ function createMemoryStorage() {
 
     async setAdmin(email, plan, expiresAt) {
       const existing = subscribers.get(email);
-      subscribers.set(email, { ...existing, email, is_admin: true, plan, status: 'active', expires_at: expiresAt });
+      subscribers.set(email, { ...existing, email, is_admin: true, role: 'admin', plan, status: 'active', expires_at: expiresAt });
       scheduleSave();
+    },
+
+    async createNotification(notif) {
+      const row = { id: notificationSeq++, signal_id: notif.signalId ?? null, type: notif.type, min_plan: notif.minPlan || 'pro', title: notif.title, body: notif.body || null, instrument: notif.instrument || null, created_at: new Date().toISOString() };
+      notifications.push(row);
+      if (notifications.length > 500) notifications.shift();
+      scheduleSave();
+      return row;
+    },
+    async listNotifications(email, plan, limit = 50) {
+      return notifications
+        .filter(n => atLeast(plan, n.min_plan))
+        .slice(-limit).reverse()
+        .map(n => ({ ...n, read: notificationReads.has(`${email}:${n.id}`) }));
+    },
+    async markNotificationRead(email, notificationId) {
+      notificationReads.add(`${email}:${notificationId}`);
+      scheduleSave();
+    },
+    async countUnreadNotifications(email, plan) {
+      return notifications.filter(n => atLeast(plan, n.min_plan) && !notificationReads.has(`${email}:${n.id}`)).length;
     },
   };
 }
@@ -359,6 +384,14 @@ function createPgStorage(pool) {
         [email, plan, expiresAt]
       );
     },
+
+    // Notifications aren't part of the Postgres schema (MySQL/Xneelo is the
+    // active production backend for this feature) — graceful no-ops so
+    // calling code never has to special-case which backend is live.
+    async createNotification() { return null; },
+    async listNotifications() { return []; },
+    async markNotificationRead() {},
+    async countUnreadNotifications() { return 0; },
   };
 }
 
@@ -409,8 +442,13 @@ function createMysqlStorage(pool) {
   return {
     mode: 'mysql',
     async init() {
-      // Schema is applied via sql/schema.sql, not here — just confirm we can reach it.
+      // Schema is applied via sql/schema.sql, not here — this just confirms
+      // we can reach it and safely picks up later schema additions (like
+      // `role`) on a database that was set up before they existed.
       await pool.query('SELECT 1');
+      try {
+        await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS role ENUM('trader','admin') NOT NULL DEFAULT 'trader' AFTER expires_at`);
+      } catch (e) { console.error('[storage] role column migration skipped (non-fatal):', e.message); }
     },
 
     async logSignal(rec) {
@@ -532,9 +570,45 @@ function createMysqlStorage(pool) {
 
     async setAdmin(email, plan, expiresAt) {
       await pool.execute(
-        `UPDATE users SET plan = ?, status = 'active', expires_at = ?, is_admin = 1 WHERE email = ?`,
+        `UPDATE users SET plan = ?, status = 'active', expires_at = ?, is_admin = 1, role = 'admin' WHERE email = ?`,
         [plan, toMysqlDatetime(expiresAt), email]
       );
+    },
+
+    async createNotification(notif) {
+      const [result] = await pool.execute(
+        `INSERT INTO notifications (signal_id, type, min_plan, title, body, instrument) VALUES (?,?,?,?,?,?)`,
+        [notif.signalId ?? null, notif.type, notif.minPlan || 'pro', notif.title, notif.body || null, notif.instrument || null]
+      );
+      const [rows] = await pool.execute(`SELECT * FROM notifications WHERE id = ?`, [result.insertId]);
+      return rows[0];
+    },
+    async listNotifications(email, plan, limit = 50) {
+      const rankOrder = ['free', 'premium', 'pro', 'elite', 'elite_max'];
+      const minRank = rankOrder.indexOf(plan);
+      const eligiblePlans = rankOrder.slice(0, minRank + 1);
+      if (!eligiblePlans.length) return [];
+      const [rows] = await pool.query(
+        `SELECT n.*, (r.notification_id IS NOT NULL) AS is_read
+         FROM notifications n
+         LEFT JOIN notification_reads r ON r.notification_id = n.id AND r.user_id = (SELECT id FROM users WHERE email = ?)
+         WHERE n.min_plan IN (${eligiblePlans.map(() => '?').join(',')})
+         ORDER BY n.created_at DESC LIMIT ?`,
+        [email, ...eligiblePlans, limit]
+      );
+      return rows.map(r => ({ ...r, read: !!r.is_read, created_at: new Date(r.created_at).toISOString() }));
+    },
+    async markNotificationRead(email, notificationId) {
+      const [users] = await pool.execute(`SELECT id FROM users WHERE email = ?`, [email]);
+      if (!users[0]) return;
+      await pool.execute(
+        `INSERT INTO notification_reads (user_id, notification_id) VALUES (?, ?) ON DUPLICATE KEY UPDATE read_at = read_at`,
+        [users[0].id, notificationId]
+      );
+    },
+    async countUnreadNotifications(email, plan) {
+      const list = await this.listNotifications(email, plan, 200);
+      return list.filter(n => !n.read).length;
     },
   };
 }

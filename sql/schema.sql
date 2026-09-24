@@ -20,6 +20,12 @@ CREATE TABLE IF NOT EXISTS users (
   plan              ENUM('free','premium','pro','elite','elite_max') NOT NULL DEFAULT 'free',
   status            ENUM('pending','active','inactive') NOT NULL DEFAULT 'pending',
   expires_at        DATETIME NULL,
+  -- `role` (not just is_admin) matches the column your existing PHP admin
+  -- tooling already looks for by convention (see inzalo_yamaqhawe_dashboard's
+  -- db.php resolve_agents_schema — 'role' is a recognized candidate there).
+  -- is_admin is kept alongside it as a plain boolean for quick app-side
+  -- checks; the two are always kept in sync (role='admin' <=> is_admin=1).
+  role              ENUM('trader','admin') NOT NULL DEFAULT 'trader',
   is_admin          TINYINT(1) NOT NULL DEFAULT 0,
   favourites        JSON NULL,
   risk_accepted_at  DATETIME NULL,

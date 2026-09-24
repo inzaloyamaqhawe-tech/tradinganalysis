@@ -894,13 +894,16 @@ function updateAuthUI() {
   document.getElementById('acctLoggedOutBox').style.display = loggedIn ? 'none' : 'block';
 
   if (loggedIn) {
-    document.getElementById('authPill').textContent = currentUser.email;
-    document.getElementById('authWhoEmail').textContent = currentUser.email;
+    // Username, not email, everywhere the frontend displays "who you are" —
+    // the email stays purely a backend/login credential from here on.
+    const displayName = currentUser.username ? `@${currentUser.username}` : currentUser.email;
+    document.getElementById('authPill').textContent = displayName;
+    document.getElementById('authWhoEmail').textContent = displayName;
     const planLabel = PLANS?.[currentUser.plan]?.label || currentUser.plan;
     document.getElementById('authStatusNote').textContent = currentUser.active
       ? `${planLabel} active — expires ${new Date(currentUser.expiresAt).toLocaleDateString()}.`
       : 'No active subscription yet — Free Market Watch.';
-    document.getElementById('acctEmailShown').textContent = currentUser.email;
+    document.getElementById('acctEmailShown').textContent = displayName;
     document.getElementById('acctStatus').textContent = currentUser.active ? `Active (${planLabel})` : (currentUser.status || 'pending');
     document.getElementById('acctExpires').textContent = currentUser.expiresAt ? new Date(currentUser.expiresAt).toLocaleDateString() : '—';
 
@@ -912,10 +915,22 @@ function updateAuthUI() {
   renderPlanGrid();
 }
 
-document.querySelectorAll('.auth-tab').forEach(tab => tab.addEventListener('click', () => {
-  document.querySelectorAll('.auth-tab').forEach(t => t.classList.toggle('active', t === tab));
-  document.getElementById('authSubmitBtn').textContent = tab.dataset.mode === 'signup' ? 'Create free account' : 'Log in';
+function setAuthMode(mode) {
+  document.querySelectorAll('.auth-tab').forEach(t => t.classList.toggle('active', t.dataset.mode === mode));
+  document.getElementById('authSubmitBtn').textContent = mode === 'signup' ? 'Create free account' : 'Log in';
   document.getElementById('authMsg').textContent = '';
+  const isSignup = mode === 'signup';
+  document.querySelectorAll('.auth-signup-only').forEach(el => { el.style.display = isSignup ? '' : 'none'; });
+  document.getElementById('authEmail').placeholder = isSignup ? 'you@example.com' : 'Username or email';
+}
+document.querySelectorAll('.auth-tab').forEach(tab => tab.addEventListener('click', () => setAuthMode(tab.dataset.mode)));
+setAuthMode('signup');
+
+document.querySelectorAll('.pw-toggle').forEach(btn => btn.addEventListener('click', () => {
+  const input = document.getElementById(btn.dataset.target);
+  const showing = input.type === 'text';
+  input.type = showing ? 'password' : 'text';
+  btn.textContent = showing ? 'Show' : 'Hide';
 }));
 
 document.getElementById('authSubmitBtn').addEventListener('click', async () => {
@@ -923,10 +938,22 @@ document.getElementById('authSubmitBtn').addEventListener('click', async () => {
   const email = document.getElementById('authEmail').value.trim();
   const password = document.getElementById('authPassword').value;
   const msg = document.getElementById('authMsg');
-  if (!email || !password) { msg.textContent = 'Enter both email and password.'; return; }
+  if (!email || !password) { msg.textContent = mode === 'signup' ? 'Enter both email and password.' : 'Enter your username/email and password.'; return; }
+
+  const body = { email, password };
+  if (mode === 'signup') {
+    body.firstName = document.getElementById('authFirstName').value.trim();
+    body.lastName = document.getElementById('authLastName').value.trim();
+    body.username = document.getElementById('authUsername').value.trim();
+    body.confirmPassword = document.getElementById('authConfirmPassword').value;
+    if (!body.firstName || !body.lastName) { msg.textContent = 'Enter your first and last name.'; return; }
+    if (!body.username) { msg.textContent = 'Choose a username.'; return; }
+    if (password !== body.confirmPassword) { msg.textContent = 'Passwords do not match.'; return; }
+  }
+
   try {
     const res = await fetch(`/api/auth/${mode}`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password }),
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
     });
     const data = await res.json();
     if (!res.ok) { msg.textContent = data.error || 'Something went wrong.'; return; }

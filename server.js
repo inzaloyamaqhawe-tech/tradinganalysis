@@ -725,7 +725,7 @@ app.get('/api/auth/me', async (req, res) => {
   res.json({
     email: req.authEmail, username: sub?.username || null, firstName: sub?.first_name || null, lastName: sub?.last_name || null,
     status: sub?.status || 'pending', expiresAt: sub?.expires_at || null, active, plan: planOf(sub), favourites: sub?.favourites || [],
-    isAdmin: !!sub?.is_admin,
+    isAdmin: !!sub?.is_admin, role: sub?.role || 'trader',
   });
 });
 
