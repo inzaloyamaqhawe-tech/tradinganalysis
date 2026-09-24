@@ -42,9 +42,13 @@
         </div>
       </div>
       <span class="status-pill" id="demoPill" style="display:none;">DEMO MODE</span>
+      <button class="nav-toggle" id="navToggle" aria-label="Menu" aria-expanded="false">
+        <span></span><span></span><span></span>
+      </button>
     </div>
   </div>
 </header>
+<div class="nav-scrim" id="navScrim"></div>
 
 <main class="shell">
   <div class="demo-banner" id="demoBanner" style="display:none;">
@@ -96,30 +100,20 @@
       </div>
 
       <div class="panel hero-auth" id="heroAuth">
-        <div class="auth-tabs">
-          <button class="auth-tab active" data-mode="signup">Create free account</button>
-          <button class="auth-tab" data-mode="login">Log in</button>
-        </div>
         <div id="authLoggedOut">
+          <h3 class="section-title" style="margin-top:0; font-size:1.05rem;">Log in</h3>
           <p class="note" style="margin-top:0;">One account, everywhere — no more retyping your email for pricing, insights or charts.</p>
 
-          <div class="row auth-signup-only"><input type="text" id="authFirstName" placeholder="First name" /></div>
-          <div class="row auth-signup-only" style="margin-top:8px;"><input type="text" id="authLastName" placeholder="Last name" /></div>
-          <div class="row auth-signup-only" style="margin-top:8px;"><input type="text" id="authUsername" placeholder="Username" /></div>
-
-          <div class="row" style="margin-top:8px;"><input type="text" id="authEmail" placeholder="you@example.com" /></div>
-
+          <div class="row" style="margin-top:8px;"><input type="text" id="authEmail" placeholder="Username or email" /></div>
           <div class="row password-row" style="margin-top:8px;">
-            <input type="password" id="authPassword" placeholder="Password (min 6 characters)" />
+            <input type="password" id="authPassword" placeholder="Password" />
             <button type="button" class="ghost pw-toggle" data-target="authPassword">Show</button>
           </div>
-          <div class="row password-row auth-signup-only" style="margin-top:8px;">
-            <input type="password" id="authConfirmPassword" placeholder="Confirm password" />
-            <button type="button" class="ghost pw-toggle" data-target="authConfirmPassword">Show</button>
-          </div>
 
-          <div class="row" style="margin-top:10px;"><button id="authSubmitBtn">Create free account</button></div>
+          <div class="row" style="margin-top:10px;"><button id="authSubmitBtn">Log in</button></div>
           <div id="authMsg" class="note"></div>
+
+          <p class="note" style="margin-top:14px; text-align:center;">No account? <a href="#" id="openRegisterLink">Register here</a></p>
         </div>
         <div id="authLoggedIn" style="display:none;">
           <p>Signed in as <strong id="authWhoEmail"></strong></p>
@@ -241,11 +235,17 @@
       <p>Subscribe to Pro Trader Tools or higher to get notified the instant a strong setup appears.</p>
       <button id="notifPricingBtn">See Pricing</button>
     </div>
-    <div class="row" id="notifPermissionRow" style="display:none; margin-bottom:14px;">
-      <button class="secondary" id="notifEnableBtn">🔔 Enable desktop notifications</button>
-      <span class="note" id="notifPermissionNote" style="margin:0;">Get a notification on this device the instant a strong signal appears — even with this tab in the background.</span>
+    <div class="row" id="notifPermissionRow" style="display:none; margin-bottom:14px; justify-content:space-between; flex-wrap:wrap; gap:10px;">
+      <div class="row" style="gap:10px; flex-wrap:wrap;">
+        <button class="secondary" id="notifEnableBtn">🔔 Enable desktop notifications</button>
+        <span class="note" id="notifPermissionNote" style="margin:0;">Get a notification on this device the instant a strong signal appears — even with this tab in the background.</span>
+      </div>
+      <button class="secondary" id="notifMarkAllReadBtn">Mark all as read</button>
     </div>
     <div id="notifList"></div>
+    <div class="row" style="justify-content:center; margin-top:14px;">
+      <button class="secondary" id="notifSeeMoreBtn" style="display:none;">See more</button>
+    </div>
   </section>
 
   <!-- PRICING -->
@@ -314,6 +314,33 @@
     <div><a href="#/risk">Risk Disclosure</a> · Questions? Reach us via PayPal.me/IYTechnologies for now.</div>
   </div>
 </footer>
+
+<div class="modal-overlay" id="registerModal">
+  <div class="modal-box modal-box-sm">
+    <div class="modal-head">
+      <div>
+        <div class="modal-title">Create your free account</div>
+        <div class="modal-sub">One account, everywhere — no more retyping your email for pricing, insights or charts.</div>
+      </div>
+      <button class="ghost" id="registerClose">✕ Close</button>
+    </div>
+
+    <div class="row"><input type="text" id="regFirstName" placeholder="First name" /></div>
+    <div class="row" style="margin-top:8px;"><input type="text" id="regLastName" placeholder="Last name" /></div>
+    <div class="row" style="margin-top:8px;"><input type="text" id="regUsername" placeholder="Username" /></div>
+    <div class="row" style="margin-top:8px;"><input type="text" id="regEmail" placeholder="you@example.com" /></div>
+    <div class="row password-row" style="margin-top:8px;">
+      <input type="password" id="regPassword" placeholder="Password (min 6 characters)" />
+      <button type="button" class="ghost pw-toggle" data-target="regPassword">Show</button>
+    </div>
+    <div class="row password-row" style="margin-top:8px;">
+      <input type="password" id="regConfirmPassword" placeholder="Confirm password" />
+      <button type="button" class="ghost pw-toggle" data-target="regConfirmPassword">Show</button>
+    </div>
+    <div class="row" style="margin-top:10px;"><button id="regSubmitBtn">Create free account</button></div>
+    <div id="regMsg" class="note"></div>
+  </div>
+</div>
 
 <div class="modal-overlay" id="chartModal">
   <div class="modal-box">

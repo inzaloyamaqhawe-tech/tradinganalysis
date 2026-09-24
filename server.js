@@ -946,14 +946,28 @@ app.get('/api/notifications', async (req, res) => {
   const sub = await store.getSubscriber(email);
   const plan = planOf(sub);
   if (!atLeast(plan, 'pro')) return res.status(402).json({ locked: true, message: 'Notifications are a Pro Trader Tools feature.' });
-  const notifications = await store.listNotifications(email, plan, 50);
-  res.json({ notifications });
+  // Dashboard shows the most recent 20 by default; "see more" pages in
+  // further batches via offset instead of ever fetching the whole backlog.
+  const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 20));
+  const offset = Math.max(0, parseInt(req.query.offset, 10) || 0);
+  const notifications = await store.listNotifications(email, plan, limit, offset);
+  res.json({ notifications, limit, offset });
 });
 
 app.post('/api/notifications/:id/read', async (req, res) => {
   const email = req.authEmail || String(req.body?.email || '').trim().toLowerCase();
   if (!email) return res.status(400).json({ error: 'email required' });
   await store.markNotificationRead(email, Number(req.params.id));
+  res.json({ ok: true });
+});
+
+app.post('/api/notifications/mark-all-read', async (req, res) => {
+  const email = req.authEmail || String(req.body?.email || '').trim().toLowerCase();
+  if (!email) return res.status(400).json({ error: 'email required' });
+  const sub = await store.getSubscriber(email);
+  const plan = planOf(sub);
+  if (!atLeast(plan, 'pro')) return res.status(402).json({ locked: true, message: 'Notifications are a Pro Trader Tools feature.' });
+  await store.markAllNotificationsRead(email, plan);
   res.json({ ok: true });
 });
 

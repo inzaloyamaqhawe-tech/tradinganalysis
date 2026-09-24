@@ -180,14 +180,19 @@ function createMemoryStorage() {
       scheduleSave();
       return row;
     },
-    async listNotifications(email, plan, limit = 50) {
-      return notifications
-        .filter(n => atLeast(plan, n.min_plan))
-        .slice(-limit).reverse()
+    async listNotifications(email, plan, limit = 20, offset = 0) {
+      const eligible = notifications.filter(n => atLeast(plan, n.min_plan)).slice().reverse();
+      return eligible.slice(offset, offset + limit)
         .map(n => ({ ...n, read: notificationReads.has(`${email}:${n.id}`) }));
     },
     async markNotificationRead(email, notificationId) {
       notificationReads.add(`${email}:${notificationId}`);
+      scheduleSave();
+    },
+    async markAllNotificationsRead(email, plan) {
+      for (const n of notifications) {
+        if (atLeast(plan, n.min_plan)) notificationReads.add(`${email}:${n.id}`);
+      }
       scheduleSave();
     },
     async countUnreadNotifications(email, plan) {
@@ -391,6 +396,7 @@ function createPgStorage(pool) {
     async createNotification() { return null; },
     async listNotifications() { return []; },
     async markNotificationRead() {},
+    async markAllNotificationsRead() {},
     async countUnreadNotifications() { return 0; },
   };
 }
@@ -583,18 +589,23 @@ function createMysqlStorage(pool) {
       const [rows] = await pool.execute(`SELECT * FROM notifications WHERE id = ?`, [result.insertId]);
       return rows[0];
     },
-    async listNotifications(email, plan, limit = 50) {
+    async listNotifications(email, plan, limit = 20, offset = 0) {
+      // A notification's min_plan is the FLOOR a viewer needs to meet, not a
+      // ceiling — atLeast(plan, min_plan) is the real eligibility check, so
+      // the plan ranks it needs to match are every rank AT OR BELOW the
+      // viewer's own plan (a pro user sees free/premium/pro-gated posts,
+      // not elite-gated ones).
       const rankOrder = ['free', 'premium', 'pro', 'elite', 'elite_max'];
-      const minRank = rankOrder.indexOf(plan);
-      const eligiblePlans = rankOrder.slice(0, minRank + 1);
+      const viewerRank = rankOrder.indexOf(plan);
+      const eligiblePlans = rankOrder.slice(0, viewerRank + 1);
       if (!eligiblePlans.length) return [];
       const [rows] = await pool.query(
         `SELECT n.*, (r.notification_id IS NOT NULL) AS is_read
          FROM notifications n
          LEFT JOIN notification_reads r ON r.notification_id = n.id AND r.user_id = (SELECT id FROM users WHERE email = ?)
          WHERE n.min_plan IN (${eligiblePlans.map(() => '?').join(',')})
-         ORDER BY n.created_at DESC LIMIT ?`,
-        [email, ...eligiblePlans, limit]
+         ORDER BY n.created_at DESC LIMIT ? OFFSET ?`,
+        [email, ...eligiblePlans, limit, offset]
       );
       return rows.map(r => ({ ...r, read: !!r.is_read, created_at: new Date(r.created_at).toISOString() }));
     },
@@ -606,8 +617,23 @@ function createMysqlStorage(pool) {
         [users[0].id, notificationId]
       );
     },
+    async markAllNotificationsRead(email, plan) {
+      const rankOrder = ['free', 'premium', 'pro', 'elite', 'elite_max'];
+      const viewerRank = rankOrder.indexOf(plan);
+      const eligiblePlans = rankOrder.slice(0, viewerRank + 1);
+      if (!eligiblePlans.length) return;
+      const [users] = await pool.execute(`SELECT id FROM users WHERE email = ?`, [email]);
+      if (!users[0]) return;
+      await pool.query(
+        `INSERT INTO notification_reads (user_id, notification_id)
+         SELECT ?, n.id FROM notifications n
+         LEFT JOIN notification_reads r ON r.notification_id = n.id AND r.user_id = ?
+         WHERE n.min_plan IN (${eligiblePlans.map(() => '?').join(',')}) AND r.notification_id IS NULL`,
+        [users[0].id, users[0].id, ...eligiblePlans]
+      );
+    },
     async countUnreadNotifications(email, plan) {
-      const list = await this.listNotifications(email, plan, 200);
+      const list = await this.listNotifications(email, plan, 200, 0);
       return list.filter(n => !n.read).length;
     },
   };

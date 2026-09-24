@@ -41,7 +41,26 @@ function showView(name) {
   navItems.forEach(b => b.classList.toggle('active', b.dataset.view === name));
   window.location.hash = `/${name}`;
 }
-navItems.forEach(btn => btn.addEventListener('click', () => showView(btn.dataset.view)));
+navItems.forEach(btn => btn.addEventListener('click', () => { showView(btn.dataset.view); closeMobileNav(); }));
+
+// Mobile hamburger — the nav slides down as a panel below the topbar instead
+// of wrapping into multiple cramped rows.
+const navToggleBtn = document.getElementById('navToggle');
+const navScrim = document.getElementById('navScrim');
+const mainnavEl = document.getElementById('mainnav');
+function closeMobileNav() {
+  mainnavEl.classList.remove('open');
+  navScrim.classList.remove('open');
+  navToggleBtn.setAttribute('aria-expanded', 'false');
+}
+function toggleMobileNav() {
+  const willOpen = !mainnavEl.classList.contains('open');
+  mainnavEl.classList.toggle('open', willOpen);
+  navScrim.classList.toggle('open', willOpen);
+  navToggleBtn.setAttribute('aria-expanded', String(willOpen));
+}
+navToggleBtn.addEventListener('click', toggleMobileNav);
+navScrim.addEventListener('click', closeMobileNav);
 
 function routeFromHash() {
   const name = (window.location.hash.replace('#/', '') || 'dashboard').trim();
@@ -156,6 +175,38 @@ async function loadDashboardCharts() {
 
 // ---------- Notifications ----------
 const NOTIF_ICON = { new_signal: '📈', level_touch: '🎯', bot_signal: '🥇' };
+const NOTIF_PAGE_SIZE = 20;
+let notifOffset = 0;
+let notifRows = [];
+
+function renderNotifRows() {
+  const listHost = document.getElementById('notifList');
+  if (!notifRows.length) {
+    listHost.innerHTML = '<p class="note">No notifications yet — you\'ll see strong system signals and professional XAU calls here the moment they happen.</p>';
+    return;
+  }
+  listHost.innerHTML = notifRows.map(n => `
+    <div class="notif-row ${n.read ? '' : 'unread'}" data-id="${n.id}">
+      <div class="notif-icon">${NOTIF_ICON[n.type] || '🔔'}</div>
+      <div>
+        <div class="notif-title">${n.title}</div>
+        ${n.body ? `<div class="notif-body">${n.body.replace(/\n/g, '<br>')}</div>` : ''}
+        <div class="notif-time">${new Date(n.created_at).toLocaleString()}</div>
+      </div>
+    </div>
+  `).join('');
+  listHost.querySelectorAll('.notif-row.unread').forEach(row => {
+    row.addEventListener('click', async () => {
+      row.classList.remove('unread');
+      const email = currentUser?.email;
+      try { await fetch(`/api/notifications/${row.dataset.id}/read`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify({ email }) }); } catch (e) {}
+      refreshNotifBadge();
+    });
+  });
+}
+
+// Only the most recent NOTIF_PAGE_SIZE load by default — "See more" pages in
+// further batches instead of ever fetching the whole backlog up front.
 async function loadNotifications() {
   // Deliberately currentUser only, never the knownEmail() fallback — that's
   // just a remembered string from typing an email into a field, not proof
@@ -165,39 +216,53 @@ async function loadNotifications() {
   const listHost = document.getElementById('notifList');
   const lockedBox = document.getElementById('notifLockedBox');
   const permRow = document.getElementById('notifPermissionRow');
-  if (!email) { lockedBox.style.display = 'block'; permRow.style.display = 'none'; listHost.innerHTML = ''; return; }
+  const seeMoreBtn = document.getElementById('notifSeeMoreBtn');
+  notifOffset = 0;
+  notifRows = [];
+  if (!email) { lockedBox.style.display = 'block'; permRow.style.display = 'none'; listHost.innerHTML = ''; seeMoreBtn.style.display = 'none'; return; }
   try {
-    const res = await fetch(`/api/notifications?email=${encodeURIComponent(email)}`, { headers: authHeaders() });
-    if (res.status === 402) { lockedBox.style.display = 'block'; permRow.style.display = 'none'; listHost.innerHTML = ''; return; }
+    const res = await fetch(`/api/notifications?email=${encodeURIComponent(email)}&limit=${NOTIF_PAGE_SIZE}&offset=0`, { headers: authHeaders() });
+    if (res.status === 402) { lockedBox.style.display = 'block'; permRow.style.display = 'none'; listHost.innerHTML = ''; seeMoreBtn.style.display = 'none'; return; }
     const data = await res.json();
     lockedBox.style.display = 'none';
     permRow.style.display = ('Notification' in window && Notification.permission !== 'granted') ? 'flex' : 'none';
     pushNewNotifications();
-    if (!data.notifications?.length) {
-      listHost.innerHTML = '<p class="note">No notifications yet — you\'ll see strong system signals and professional XAU calls here the moment they happen.</p>';
-      return;
-    }
-    listHost.innerHTML = data.notifications.map(n => `
-      <div class="notif-row ${n.read ? '' : 'unread'}" data-id="${n.id}">
-        <div class="notif-icon">${NOTIF_ICON[n.type] || '🔔'}</div>
-        <div>
-          <div class="notif-title">${n.title}</div>
-          ${n.body ? `<div class="notif-body">${n.body.replace(/\n/g, '<br>')}</div>` : ''}
-          <div class="notif-time">${new Date(n.created_at).toLocaleString()}</div>
-        </div>
-      </div>
-    `).join('');
-    listHost.querySelectorAll('.notif-row.unread').forEach(row => {
-      row.addEventListener('click', async () => {
-        row.classList.remove('unread');
-        try { await fetch(`/api/notifications/${row.dataset.id}/read`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify({ email }) }); } catch (e) {}
-        refreshNotifBadge();
-      });
-    });
+    notifRows = data.notifications || [];
+    notifOffset = notifRows.length;
+    renderNotifRows();
+    seeMoreBtn.style.display = notifRows.length >= NOTIF_PAGE_SIZE ? 'inline-block' : 'none';
   } catch (e) {
     listHost.innerHTML = '<p class="note">Failed to load notifications.</p>';
   }
 }
+
+document.getElementById('notifSeeMoreBtn')?.addEventListener('click', async () => {
+  const email = currentUser?.email;
+  if (!email) return;
+  const seeMoreBtn = document.getElementById('notifSeeMoreBtn');
+  seeMoreBtn.disabled = true;
+  try {
+    const res = await fetch(`/api/notifications?email=${encodeURIComponent(email)}&limit=${NOTIF_PAGE_SIZE}&offset=${notifOffset}`, { headers: authHeaders() });
+    const data = await res.json();
+    const nextRows = data.notifications || [];
+    notifRows = notifRows.concat(nextRows);
+    notifOffset += nextRows.length;
+    renderNotifRows();
+    seeMoreBtn.style.display = nextRows.length >= NOTIF_PAGE_SIZE ? 'inline-block' : 'none';
+  } catch (e) {} finally { seeMoreBtn.disabled = false; }
+});
+
+document.getElementById('notifMarkAllReadBtn')?.addEventListener('click', async () => {
+  const email = currentUser?.email;
+  if (!email) return;
+  try {
+    await fetch('/api/notifications/mark-all-read', { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify({ email }) });
+    notifRows = notifRows.map(n => ({ ...n, read: true }));
+    renderNotifRows();
+    refreshNotifBadge();
+  } catch (e) {}
+});
+
 document.getElementById('notifPricingBtn')?.addEventListener('click', () => showView('pricing'));
 document.getElementById('notifEnableBtn')?.addEventListener('click', async () => {
   const granted = await requestNotifPermission();
@@ -1125,17 +1190,6 @@ function updateAuthUI() {
   renderPlanGrid();
 }
 
-function setAuthMode(mode) {
-  document.querySelectorAll('.auth-tab').forEach(t => t.classList.toggle('active', t.dataset.mode === mode));
-  document.getElementById('authSubmitBtn').textContent = mode === 'signup' ? 'Create free account' : 'Log in';
-  document.getElementById('authMsg').textContent = '';
-  const isSignup = mode === 'signup';
-  document.querySelectorAll('.auth-signup-only').forEach(el => { el.style.display = isSignup ? '' : 'none'; });
-  document.getElementById('authEmail').placeholder = isSignup ? 'you@example.com' : 'Username or email';
-}
-document.querySelectorAll('.auth-tab').forEach(tab => tab.addEventListener('click', () => setAuthMode(tab.dataset.mode)));
-setAuthMode('signup');
-
 document.querySelectorAll('.pw-toggle').forEach(btn => btn.addEventListener('click', () => {
   const input = document.getElementById(btn.dataset.target);
   const showing = input.type === 'text';
@@ -1143,32 +1197,59 @@ document.querySelectorAll('.pw-toggle').forEach(btn => btn.addEventListener('cli
   btn.textContent = showing ? 'Show' : 'Hide';
 }));
 
+// ---------- Login (the hero card, shown by default) ----------
 document.getElementById('authSubmitBtn').addEventListener('click', async () => {
-  const mode = document.querySelector('.auth-tab.active').dataset.mode;
   const email = document.getElementById('authEmail').value.trim();
   const password = document.getElementById('authPassword').value;
   const msg = document.getElementById('authMsg');
-  if (!email || !password) { msg.textContent = mode === 'signup' ? 'Enter both email and password.' : 'Enter your username/email and password.'; return; }
-
-  const body = { email, password };
-  if (mode === 'signup') {
-    body.firstName = document.getElementById('authFirstName').value.trim();
-    body.lastName = document.getElementById('authLastName').value.trim();
-    body.username = document.getElementById('authUsername').value.trim();
-    body.confirmPassword = document.getElementById('authConfirmPassword').value;
-    if (!body.firstName || !body.lastName) { msg.textContent = 'Enter your first and last name.'; return; }
-    if (!body.username) { msg.textContent = 'Choose a username.'; return; }
-    if (password !== body.confirmPassword) { msg.textContent = 'Passwords do not match.'; return; }
-  }
-
+  if (!email || !password) { msg.textContent = 'Enter your username/email and password.'; return; }
   try {
-    const res = await fetch(`/api/auth/${mode}`, {
+    const res = await fetch('/api/auth/login', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password }),
+    });
+    const data = await res.json();
+    if (!res.ok) { msg.textContent = data.error || 'Something went wrong.'; return; }
+    setToken(data.token);
+    msg.textContent = '';
+    await refreshMe();
+  } catch (e) {
+    msg.textContent = 'Network error — try again.';
+  }
+});
+
+// ---------- Register (a popup modal off the "No account? Register here" link) ----------
+const registerModal = document.getElementById('registerModal');
+document.getElementById('openRegisterLink').addEventListener('click', (e) => {
+  e.preventDefault();
+  document.getElementById('regMsg').textContent = '';
+  registerModal.classList.add('open');
+});
+document.getElementById('registerClose').addEventListener('click', () => registerModal.classList.remove('open'));
+registerModal.addEventListener('click', (e) => { if (e.target === registerModal) registerModal.classList.remove('open'); });
+
+document.getElementById('regSubmitBtn').addEventListener('click', async () => {
+  const msg = document.getElementById('regMsg');
+  const body = {
+    firstName: document.getElementById('regFirstName').value.trim(),
+    lastName: document.getElementById('regLastName').value.trim(),
+    username: document.getElementById('regUsername').value.trim(),
+    email: document.getElementById('regEmail').value.trim(),
+    password: document.getElementById('regPassword').value,
+    confirmPassword: document.getElementById('regConfirmPassword').value,
+  };
+  if (!body.firstName || !body.lastName) { msg.textContent = 'Enter your first and last name.'; return; }
+  if (!body.username) { msg.textContent = 'Choose a username.'; return; }
+  if (!body.email || !body.password) { msg.textContent = 'Enter both email and password.'; return; }
+  if (body.password !== body.confirmPassword) { msg.textContent = 'Passwords do not match.'; return; }
+  try {
+    const res = await fetch('/api/auth/signup', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
     });
     const data = await res.json();
     if (!res.ok) { msg.textContent = data.error || 'Something went wrong.'; return; }
     setToken(data.token);
     msg.textContent = '';
+    registerModal.classList.remove('open');
     await refreshMe();
   } catch (e) {
     msg.textContent = 'Network error — try again.';
