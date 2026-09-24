@@ -287,6 +287,58 @@ async function fetchCryptoCandles(key, timeframe) {
   return data.map(c => ({ open: parseFloat(c.o), high: parseFloat(c.h), low: parseFloat(c.l), close: parseFloat(c.c), time: c.t, volume: parseFloat(c.v) || 0 }));
 }
 
+// ---- Full-history candle fetch, used ONLY to resolve an OPEN signal —
+// distinct from getCandlesFor's cheap ~100-candle cache below, which the
+// live engine uses for regime/ATR reads and doesn't need to change.
+// A signal can sit open a long time, and this free Render service spins
+// down from inactivity whenever the keepalive ping doesn't land, so the
+// poll loop itself can go quiet for a stretch — a fixed ~4-day candle
+// window meant whatever happened outside it was invisible forever, so a
+// setup that had already reached its SL or TP days ago just sat "open"
+// with no evidence either way, permanently. This instead walks real
+// history all the way back to the signal's own entry time, in pages —
+// same approach as the older CRT dashboard's monitorSetups (see
+// PROJECTS/CRT-Trade-Dashboard-Old-Files) — so a stale open signal can
+// actually catch up and settle instead of sitting open forever.
+const CRYPTO_CANDLESTICK_MAX = 300; // crypto.com's own per-request cap
+async function fetchCryptoCandlesSince(key, sinceMs) {
+  const HOUR = 3600 * 1000;
+  const all = [];
+  let cursor = sinceMs;
+  const now = Date.now();
+  while (cursor < now && all.length < 5000) {
+    const endTs = Math.min(now, cursor + CRYPTO_CANDLESTICK_MAX * HOUR);
+    const url = `https://api.crypto.com/exchange/v1/public/get-candlestick?instrument_name=${key}&timeframe=1h&start_ts=${cursor}&end_ts=${endTs}&count=${CRYPTO_CANDLESTICK_MAX}`;
+    let json;
+    try { json = await (await fetch(url)).json(); } catch (e) { break; }
+    const page = json?.result?.data || [];
+    if (!page.length) { cursor = endTs + 1; continue; }
+    all.push(...page.map(c => ({ open: parseFloat(c.o), high: parseFloat(c.h), low: parseFloat(c.l), close: parseFloat(c.c), time: c.t, volume: parseFloat(c.v) || 0 })));
+    const lastT = page[page.length - 1].t;
+    if (lastT <= cursor) break; // safety: guarantee forward progress
+    cursor = lastT + HOUR;
+  }
+  return all;
+}
+async function getResolutionCandlesFor(instrument, sinceMs) {
+  if (CRYPTO_KEYS.has(instrument)) {
+    try { return await fetchCryptoCandlesSince(instrument, sinceMs); }
+    catch (e) { console.error(`resolution candle fetch failed for ${instrument}`, e.message); return []; }
+  }
+  if (twelveData.isConfigured()) {
+    const fx = FX_INSTRUMENTS.find(f => f.key === instrument);
+    if (fx) {
+      const hoursSince = Math.ceil((Date.now() - sinceMs) / (3600 * 1000)) + 5;
+      const outputsize = Math.min(5000, Math.max(100, hoursSince));
+      try { return await twelveData.getCandles(fx.twelveDataSymbol, '1h', outputsize); }
+      catch (e) { console.error(`Twelve Data resolution fetch failed for ${instrument}`, e.message); return []; }
+    }
+  }
+  // No real historical source (FX without a Twelve Data key) — fall back to
+  // the regular cache; not a full catch-up, but no worse than before.
+  return getCandlesFor(instrument);
+}
+
 // Shared candle retrieval — crypto gets real candles straight from the
 // exchange; FX/gold get real candles from Twelve Data once configured,
 // otherwise fall back to bucketing our own 10-minute price polls into
@@ -564,7 +616,7 @@ async function trackSignals() {
   for (const sig of openSystemSignals) {
     const key = sig.instrument;
     let candles;
-    try { candles = await getCandlesFor(key); } catch (e) { candles = []; }
+    try { candles = await getResolutionCandlesFor(key, new Date(sig.created_at).getTime()); } catch (e) { candles = []; }
     if (!candles.length) continue;
 
     const resolved = resolveSignalFromCandles(sig, candles);
