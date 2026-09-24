@@ -629,7 +629,12 @@ async function trackSignals() {
 
     const alertedLevels = new Set(sig.alerted_levels || []);
     const newlyHitLevels = resolved.hitHistory.map(h => h.level).filter(l => !alertedLevels.has(l));
-    const newlyHitSL = resolved.slTouched && !alertedLevels.has('SL');
+    // Once any TP has printed, the setup is already a win no matter what
+    // price does afterward (see resolveSignalFromCandles's outcome logic) —
+    // an "SL touched" push after that would read as a loss when it isn't
+    // one, so it's not worth notifying at all once a TP is already banked.
+    const anyTpHit = resolved.hitHistory.some(h => h.level?.startsWith('TP'));
+    const newlyHitSL = resolved.slTouched && !alertedLevels.has('SL') && !anyTpHit;
     const touchLabels = [...newlyHitLevels, ...(newlyHitSL ? ['SL'] : [])];
     if (touchLabels.length) {
       await alertLevelTouch(sig, touchLabels);
