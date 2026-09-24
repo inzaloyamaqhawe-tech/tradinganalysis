@@ -937,10 +937,6 @@ app.get('/api/insights', async (req, res) => {
 
   if (proTools) {
     payload.favourites = sub.favourites || [];
-    const stats = computePerformanceStats(await store.listSignals(500));
-    payload.bestMarkets = Object.entries(stats.byInstrument)
-      .map(([key, s]) => ({ key, label: LABELS[key], ...s, winRate: (s.wins + s.losses) ? Math.round((s.wins / (s.wins + s.losses)) * 1000) / 10 : null }))
-      .sort((a, b) => (b.winRate ?? -1) - (a.winRate ?? -1));
   }
 
   res.json(payload);
@@ -1065,11 +1061,6 @@ app.get('/api/performance', async (req, res) => {
   });
 
   const payload = { stats, recent, premium, plan };
-  if (proTools) {
-    payload.bestMarkets = Object.entries(stats.byInstrument)
-      .map(([key, s]) => ({ key, label: LABELS[key], ...s, winRate: (s.wins + s.losses) ? Math.round((s.wins / (s.wins + s.losses)) * 1000) / 10 : null }))
-      .sort((a, b) => (b.winRate ?? -1) - (a.winRate ?? -1));
-  }
   res.json(payload);
 });
 

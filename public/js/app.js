@@ -1441,15 +1441,8 @@ function renderInsights(data) {
     }
   }
 
-  const bestBox = document.getElementById('bestMarketsBox');
-  if (data.proTools && data.bestMarkets?.length) {
-    bestBox.style.display = 'block';
-    document.getElementById('bestMarketsList').innerHTML = data.bestMarkets.slice(0, 5).map(m => `
-      <div class="sp-row"><span>${m.label}</span><b>${m.winRate != null ? m.winRate + '% win rate' : '—'} (${m.wins}W / ${m.losses}L)</b></div>
-    `).join('');
-  } else {
-    bestBox.style.display = 'none';
-  }
+  // Best-performing markets lives on the Dashboard chart only — see
+  // loadDashboardCharts / drawBarChart.
 
   if (data.elite && aiConfigured !== null) loadAiElite(data);
   else document.getElementById('aiEliteBox').style.display = 'none';
