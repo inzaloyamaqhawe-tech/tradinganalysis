@@ -46,6 +46,15 @@ const PLANS = {
       'AI never promises profit — it explains risk, always',
     ],
   },
+  elite_max: {
+    key: 'elite_max', label: 'Elite Max', price: 369.99, rank: 4,
+    features: [
+      'Everything in AI Elite',
+      'Priority professional XAU/USD calls, the instant they\'re posted',
+      'Full notification feed — every strong system signal and every professional call',
+      'Highest-priority support',
+    ],
+  },
 };
 
 const RANK = Object.fromEntries(Object.values(PLANS).map(p => [p.key, p.rank]));

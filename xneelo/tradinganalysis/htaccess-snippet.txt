@@ -1,0 +1,8 @@
+# Add this block to the root .htaccess (the one with the /shop rule),
+# ABOVE the existing "ErrorDocument 404" line. Keep the existing /shop
+# rule exactly as it is — this is a separate, independent rule, not nested
+# inside it, and doesn't touch inzalo_yamaqhawe_dashboard/ at all.
+
+# TradingAnalysis (runs on Render — Node.js isn't supported on this
+# hosting — this just forwards the path to it)
+RewriteRule ^tradinganalysis/?(.*)$ https://tradinganalysis-w9gz.onrender.com/$1 [R=302,L]

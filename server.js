@@ -20,6 +20,16 @@ app.use(express.static('public', { etag: true, lastModified: true, setHeaders: (
 
 const PORT = process.env.PORT || 3000;
 const ADMIN_KEY = process.env.ADMIN_KEY || 'change-me-admin-key';
+// This one account gets Elite Max free, forever, automatically — everyone
+// else buys it. Applied the moment this exact email signs up or logs in.
+const ADMIN_EMAIL = (process.env.ADMIN_EMAIL || 'langelihleimbongi@gmail.com').toLowerCase();
+const ADMIN_EXPIRES_AT = '2099-12-31T00:00:00.000Z';
+async function applyAdminOverrideIfNeeded(email) {
+  if (email !== ADMIN_EMAIL) return;
+  const sub = await store.getSubscriber(email);
+  if (sub?.is_admin && sub?.plan === 'elite_max') return; // already applied
+  await store.setAdmin(email, 'elite_max', ADMIN_EXPIRES_AT);
+}
 // Per-plan PayPal.me links: same handle, different amount per tier — mirrors
 // the pattern already proven out on ResumeBuilderAI. PAYPAL_LINK stays as a
 // back-compat override for the Premium price specifically (existing env var).
@@ -125,6 +135,15 @@ const FX_INSTRUMENTS = [
 ];
 const ALL_KEYS = [...CRYPTO_INSTRUMENTS, ...FX_INSTRUMENTS].map(a => a.key);
 const LABELS = Object.fromEntries([...CRYPTO_INSTRUMENTS, ...FX_INSTRUMENTS].map(a => [a.key, a.label]));
+// XAU/USD no longer runs through our own regime/strategy engine — a
+// separate Telegram bot posts professional-analyst XAU calls straight into
+// the `signals` table (source='bot'; see sql/BOT_INSTRUCTIONS.md), and this
+// app just displays whatever it finds there. Live price ticking for XAU is
+// untouched (it stays in ALL_KEYS/FX_INSTRUMENTS for that); ENGINE_KEYS is
+// what everything analysis-related (computeSignal/trackSignals/the
+// single-active-recommendation posting logic) iterates instead of ALL_KEYS.
+const XAU_PRIORITY_WINDOW_MS = 20 * 60 * 1000;
+const ENGINE_KEYS = ALL_KEYS.filter(k => k !== 'XAUUSD');
 
 // In-memory cache of latest prices (fast reads for /api/prices)
 let latestCache = {}; // key -> { price, changePct, updatedAt }
@@ -330,12 +349,54 @@ async function computeSignal(instrument) {
   return runEngine(candles, smcCtx);
 }
 async function getCachedInsight(instrument) {
+  if (instrument === 'XAUUSD') return getXauInsight();
   if (insightCache[instrument]) return insightCache[instrument];
   // Cold start (no poll has run yet) — compute once and cache it so the
   // very first request isn't left with nothing either.
   const result = await computeSignal(instrument);
   insightCache[instrument] = result;
   return result;
+}
+
+// Shapes whatever the bot last posted for XAU into the same insight-object
+// contract computeSignal/runEngine produces, so every downstream consumer
+// (topPick selection, the Insights list, the chart side panel) needs no
+// special-casing beyond this one function. `priority` is true exactly when
+// the spec's freshness rule applies — an open bot signal posted within the
+// last 20 minutes — and is what makes /api/insights force XAU to the top
+// regardless of what our own engine's best confidence elsewhere is.
+async function getXauInsight() {
+  const latest = await store.getLatestSignalFor('XAUUSD');
+  const isFreshBotCall = !!(latest && latest.source === 'bot' && latest.status === 'open'
+    && (Date.now() - new Date(latest.created_at).getTime()) < XAU_PRIORITY_WINDOW_MS);
+
+  if (!latest || latest.source !== 'bot') {
+    return {
+      signal: 'HOLD', regime: null, strategy: null, confidence: null, levels: null,
+      note: 'No professional XAU/USD signal posted right now. This market is covered by our professional trading team rather than the automated engine — check back soon, and as always, conduct your own analysis.',
+      explanation: null, invalidation: null, patterns: [], zones: null, zoneNote: null, priority: false,
+    };
+  }
+
+  const isOpen = latest.status === 'open';
+  const levels = isOpen ? { entry: latest.entry, sl: latest.sl, tp1: latest.tp1, tp2: latest.tp2, tp3: latest.tp3, tp4: latest.tp4, riskReward: null } : null;
+  const biasWord = latest.side === 'BUY' ? 'bullish' : 'bearish';
+  return {
+    signal: isOpen ? latest.side : 'HOLD',
+    regime: null,
+    strategy: 'PROFESSIONAL',
+    confidence: latest.confidence,
+    levels,
+    note: isOpen
+      ? `This setup was analyzed and posted by our professional trading team, not our automated engine (setup strength ${latest.confidence != null ? latest.confidence + '/100' : 'not rated'}). Informational only — conduct your own analysis and risk assessment before making any trading decision.`
+      : 'The most recent professional XAU/USD call has since resolved — check Track Record for the outcome. Our own engine no longer analyzes XAU directly.',
+    explanation: isOpen
+      ? `A member of our professional trading team identified this ${biasWord} XAU/USD setup${latest.posted_by ? ` via ${latest.posted_by}` : ''}. This is a human, discretionary call — not an algorithmic signal — so treat it with the same informational-only framing as everything else on this platform.`
+      : null,
+    invalidation: (isOpen && levels?.sl != null) ? `This idea weakens if price closes back ${latest.side === 'BUY' ? 'below' : 'above'} ${levels.sl} — that's the invalidation point.` : null,
+    patterns: [], zones: null, zoneNote: null,
+    priority: isFreshBotCall,
+  };
 }
 
 // Walks every candle since a signal fired and asks, authoritatively, "what
@@ -437,14 +498,19 @@ async function alertLevelTouch(sig, newLevels) {
 //     see the exact same Track Record — there's no per-visitor "pick".
 async function trackSignals() {
   const results = {};
-  for (const key of ALL_KEYS) {
+  // XAU is deliberately excluded — the bot manages that instrument's
+  // signals entirely on its own, straight against the shared table.
+  for (const key of ENGINE_KEYS) {
     try { results[key] = await computeSignal(key); insightCache[key] = results[key]; } catch (e) { /* leave this cycle's cache entry as-is */ }
   }
 
   // ---- Resolve (or invalidate) whatever is currently logged as open. At
-  // most one row is ever open by construction, but this loop makes no
-  // assumption about that — it just resolves every open row it finds. ----
-  const openSignals = await store.getOpenSignals();
+  // most one system-sourced row is ever open by construction, but this loop
+  // makes no assumption about that — it just resolves every open row it
+  // finds. Bot-sourced rows (XAU) are explicitly skipped: the bot resolves
+  // its own signals directly (see sql/BOT_INSTRUCTIONS.md) — our candle-walk
+  // logic has no business touching them.
+  const openSignals = (await store.getOpenSignals()).filter(s => s.source !== 'bot');
   for (const sig of openSignals) {
     const key = sig.instrument;
     let candles;
@@ -484,18 +550,22 @@ async function trackSignals() {
   }
 
   // ---- Post at most one new recommendation this cycle, and only when
-  // nothing is pending — the highest-confidence actionable setup across
-  // every tracked market, whichever instrument that happens to be. ----
-  const stillPending = (await store.getOpenSignals()).length > 0;
+  // nothing of ours is pending — the highest-confidence actionable setup
+  // across every non-XAU tracked market. XAU's own pending/resolved state
+  // (managed entirely by the bot) never blocks this, and this never
+  // touches XAU — they're two fully separate single-active-recommendation
+  // tracks now. ----
+  const stillPending = (await store.getOpenSignals()).some(s => s.source !== 'bot');
   if (stillPending) return;
 
-  const actionable = ALL_KEYS
+  const actionable = ENGINE_KEYS
     .map(key => ({ key, result: results[key] }))
     .filter(({ result }) => result && result.signal !== 'HOLD' && result.levels && result.confidence != null);
   if (!actionable.length) return;
 
   const best = actionable.reduce((a, b) => (b.result.confidence > a.result.confidence ? b : a));
   const row = await store.logSignal({
+    source: 'system',
     instrument: best.key, strategy: best.result.strategy, regime: best.result.regime, side: best.result.signal,
     entry: best.result.levels.entry, sl: best.result.levels.sl,
     tp1: best.result.levels.tp1, tp2: best.result.levels.tp2, tp3: best.result.levels.tp3, tp4: best.result.levels.tp4,
@@ -595,33 +665,50 @@ app.use(async (req, res, next) => {
 
 function isValidEmail(email) { return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email); }
 
+function isValidUsername(u) { return /^[a-zA-Z0-9_]{3,20}$/.test(u); }
+
 app.post('/api/auth/signup', async (req, res) => {
   const email = String(req.body?.email || '').trim().toLowerCase();
   const password = String(req.body?.password || '');
+  const confirmPassword = String(req.body?.confirmPassword || '');
+  const firstName = String(req.body?.firstName || '').trim();
+  const lastName = String(req.body?.lastName || '').trim();
+  const username = String(req.body?.username || '').trim();
+
   if (!isValidEmail(email)) return res.status(400).json({ error: 'Enter a valid email address.' });
+  if (!firstName || !lastName) return res.status(400).json({ error: 'Enter your first and last name.' });
+  if (!isValidUsername(username)) return res.status(400).json({ error: 'Username must be 3-20 characters, letters/numbers/underscore only.' });
   if (password.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters.' });
+  if (password !== confirmPassword) return res.status(400).json({ error: 'Passwords do not match.' });
 
   const existing = await store.getSubscriber(email);
   if (existing?.password_hash) return res.status(409).json({ error: 'An account already exists for this email — log in instead.' });
+  if (await store.isUsernameTaken(username, email)) return res.status(409).json({ error: 'That username is already taken.' });
 
-  await store.setPassword(email, hashPassword(password));
+  await store.setPassword(email, hashPassword(password), { firstName, lastName, username });
+  await applyAdminOverrideIfNeeded(email);
   const token = crypto.randomBytes(24).toString('hex');
   await store.createSession(token, email);
   const sub = await store.getSubscriber(email);
-  sendMail(email, 'Welcome to TradingAnalysis', `Your account has been created. Live market data is free — subscribe any time for ${PRICE_MONTHLY} to unlock full insights.`);
-  res.json({ ok: true, token, email, status: sub?.status || 'pending' });
+  sendMail(email, 'Welcome to TradingAnalysis', `Hi ${firstName}, your account has been created. Live market data is free — subscribe any time for ${PRICE_MONTHLY} to unlock full insights.`);
+  res.json({ ok: true, token, email, username: sub?.username, status: sub?.status || 'pending', plan: planOf(sub) });
 });
 
 app.post('/api/auth/login', async (req, res) => {
-  const email = String(req.body?.email || '').trim().toLowerCase();
+  const identifier = String(req.body?.email || req.body?.username || '').trim();
   const password = String(req.body?.password || '');
-  const sub = await store.getSubscriber(email);
+  // Accept either an email or a username — whichever it looks like.
+  const sub = isValidEmail(identifier)
+    ? await store.getSubscriber(identifier.toLowerCase())
+    : await store.getSubscriberByUsername(identifier);
   if (!sub?.password_hash || !verifyPassword(password, sub.password_hash)) {
-    return res.status(401).json({ error: 'Incorrect email or password.' });
+    return res.status(401).json({ error: 'Incorrect email/username or password.' });
   }
+  await applyAdminOverrideIfNeeded(sub.email);
   const token = crypto.randomBytes(24).toString('hex');
-  await store.createSession(token, email);
-  res.json({ ok: true, token, email, status: sub.status });
+  await store.createSession(token, sub.email);
+  const fresh = await store.getSubscriber(sub.email);
+  res.json({ ok: true, token, email: sub.email, username: fresh?.username, status: fresh.status, plan: planOf(fresh) });
 });
 
 app.post('/api/auth/logout', async (req, res) => {
@@ -635,7 +722,11 @@ app.get('/api/auth/me', async (req, res) => {
   if (!req.authEmail) return res.status(401).json({ error: 'Not logged in.' });
   const sub = await store.getSubscriber(req.authEmail);
   const active = !!(sub && sub.status === 'active' && sub.expires_at && new Date(sub.expires_at) > new Date());
-  res.json({ email: req.authEmail, status: sub?.status || 'pending', expiresAt: sub?.expires_at || null, active, plan: planOf(sub), favourites: sub?.favourites || [] });
+  res.json({
+    email: req.authEmail, username: sub?.username || null, firstName: sub?.first_name || null, lastName: sub?.last_name || null,
+    status: sub?.status || 'pending', expiresAt: sub?.expires_at || null, active, plan: planOf(sub), favourites: sub?.favourites || [],
+    isAdmin: !!sub?.is_admin,
+  });
 });
 
 app.get('/api/prices', (req, res) => {
@@ -712,10 +803,14 @@ app.get('/api/insights', async (req, res) => {
   // Surface the single strongest setup across all tracked markets, so a user
   // isn't left to guess which mixed-confidence read to actually pay
   // attention to. Ties broken by which strategy fired (arbitrary but stable).
+  // A fresh (posted within the last 20 minutes) professional XAU call always
+  // wins this contest outright, regardless of confidence — a human analyst's
+  // live call takes priority over the automated engine's own best read.
   const actionable = signals.filter(s => s.signal !== 'HOLD' && s.confidence != null);
-  const topPick = actionable.length
+  const freshXau = signals.find(s => s.key === 'XAUUSD' && s.priority && s.signal !== 'HOLD');
+  const topPick = freshXau || (actionable.length
     ? actionable.reduce((best, s) => (s.confidence > best.confidence ? s : best))
-    : null;
+    : null);
 
   const payload = { locked: false, plan, expiresAt: sub.expires_at, signals, topPick, proTools, elite };
 
@@ -843,7 +938,9 @@ app.get('/api/history', async (req, res) => {
 
   if (premium && closes.length) {
     payload.insight = { ...(await getCachedInsight(key)) };
-    payload.insight.engineTimeframe = '1h'; // so the UI can label it even when displaying a different timeframe
+    // XAU's "insight" comes from the professional-signal bot, not our 1h
+    // engine — no engine timeframe to label there.
+    if (key !== 'XAUUSD') payload.insight.engineTimeframe = '1h';
   }
 
   if (proTools && closes.length) {
