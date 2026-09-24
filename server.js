@@ -508,18 +508,11 @@ async function alertBotSignal(sig) {
 // Once posted, a recommendation is never aborted just because the engine's
 // read for that instrument moved on — a user may already have acted on it.
 // It's tracked to its real conclusion (a target hit, or the stop) via
-// resolveSignalFromCandles, same as always. What CAN happen is a different
-// instrument overtaking it as the best read — but even then, we don't
-// switch the instant that happens (a momentary flicker shouldn't yank the
-// rug under someone who just took the posted trade). A challenger has to
-// stay the best read for a sustained window before it actually gets
-// posted, and the previous pick just keeps resolving in parallel — see
-// SUSTAINED_CHALLENGE_MS below. This is in-memory (resets on a restart/
-// redeploy), which just means a challenger's clock restarts too — not a
-// correctness problem, only a minor delay in an edge case.
-const SUSTAINED_CHALLENGE_MS = 15 * 60 * 1000;
-let pendingChallenger = null; // { instrument, firstSeenAt }
-
+// resolveSignalFromCandles, same as always. When a DIFFERENT instrument
+// becomes the best read, it's posted and tracked immediately, in parallel
+// with whatever's still open — a user logging in right now must see the
+// current best being tracked without waiting on an older, unresolved pick
+// to close first. Multiple system signals can be open at once by design.
 async function postNewSystemSignal(key, result) {
   const row = await store.logSignal({
     source: 'system',
@@ -586,43 +579,21 @@ async function trackSignals() {
     await store.updateSignalOutcome(sig.id, patch);
   }
 
-  // ---- Decide whether to post a new recommendation. The most recently
-  // posted still-open system signal is "the champion" — the one whatever
-  // challenger logic below compares against. Older still-open ones (if a
-  // previous challenger already won) are already-superseded picks quietly
-  // resolving on their own via the loop above. ----
+  // ---- Decide whether to post a new recommendation. The current best read
+  // gets tracked immediately if it isn't already an open pick — no waiting
+  // period. Whatever else is already open just keeps resolving in parallel
+  // via the loop above, untouched. ----
   const actionable = ENGINE_KEYS
     .map(key => ({ key, result: results[key] }))
     .filter(({ result }) => result && result.signal !== 'HOLD' && result.levels && result.confidence != null);
-  if (!actionable.length) { pendingChallenger = null; return; }
+  if (!actionable.length) return;
   const best = actionable.reduce((a, b) => (b.result.confidence > a.result.confidence ? b : a));
 
   const stillOpen = (await store.getOpenSignals()).filter(s => s.source !== 'bot');
-  const champion = stillOpen.length
-    ? stillOpen.reduce((a, b) => (new Date(b.created_at) > new Date(a.created_at) ? b : a))
-    : null;
+  const alreadyOpen = stillOpen.some(s => s.instrument === best.key);
+  if (alreadyOpen) return;
 
-  if (!champion) {
-    // Nothing currently open — post the best read immediately, no wait.
-    pendingChallenger = null;
-    await postNewSystemSignal(best.key, best.result);
-    return;
-  }
-
-  if (best.key === champion.instrument) {
-    // The champion is still the best read — no challenger to track.
-    pendingChallenger = null;
-    return;
-  }
-
-  if (pendingChallenger?.instrument === best.key) {
-    if (Date.now() - pendingChallenger.firstSeenAt >= SUSTAINED_CHALLENGE_MS) {
-      await postNewSystemSignal(best.key, best.result);
-      pendingChallenger = null;
-    }
-  } else {
-    pendingChallenger = { instrument: best.key, firstSeenAt: Date.now() };
-  }
+  await postNewSystemSignal(best.key, best.result);
 }
 
 // A reached target (TP1-TP4) is a win even if the position later gave back
@@ -884,26 +855,20 @@ app.get('/api/insights', async (req, res) => {
     ? actionable.reduce((best, s) => (s.confidence > best.confidence ? s : best))
     : null);
 
-  // The officially-tracked pick (what's actually posted to the database/
-  // Track Record right now) can legitimately differ from topPick above —
-  // topPick is "what reads best on this exact request," the tracked one
-  // only changes after a challenger sustains the lead for 15 minutes (see
-  // trackSignals in server.js). Surfacing both, with the tracked one's
-  // real timestamp, is what "PAXG was best 1-2 minutes ago, LINK reads
-  // better now" needs: the user can see it's the same PAXG trade still
-  // being tracked, not something silently swapped out from under them.
-  const openSystem = (await store.getOpenSignals()).filter(s => s.source !== 'bot');
-  const tracked = openSystem.length
-    ? openSystem.reduce((a, b) => (new Date(b.created_at) > new Date(a.created_at) ? b : a))
-    : null;
-  const challenger = pendingChallenger && pendingChallenger.instrument !== tracked?.instrument
-    ? { instrument: pendingChallenger.instrument, label: LABELS[pendingChallenger.instrument], sinceMs: Date.now() - pendingChallenger.firstSeenAt, requiredMs: SUSTAINED_CHALLENGE_MS }
-    : null;
+  // Every currently-open system pick is tracked in parallel — a new best
+  // read gets posted the moment it appears, without waiting for an older,
+  // still-unresolved pick to close first. Newest first, so the current
+  // best is what a user sees up top.
+  const openSystem = (await store.getOpenSignals()).filter(s => s.source !== 'bot')
+    .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+  const trackedList = openSystem.map(t => ({
+    instrument: t.instrument, label: LABELS[t.instrument], side: t.side, confidence: t.confidence, trackedSince: t.created_at,
+  }));
 
   const payload = {
     locked: false, plan, expiresAt: sub.expires_at, signals, topPick, proTools, elite,
-    tracked: tracked ? { instrument: tracked.instrument, label: LABELS[tracked.instrument], side: tracked.side, confidence: tracked.confidence, trackedSince: tracked.created_at } : null,
-    challenger,
+    tracked: trackedList[0] || null,
+    trackedAll: trackedList,
   };
 
   if (proTools) {

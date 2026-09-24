@@ -1338,27 +1338,20 @@ function renderInsights(data) {
     </div>
   `;
 
-  // What's actually posted/tracked on the database right now can honestly
-  // differ from "best opportunity right now" above — that's a live read
-  // that can shift market to market; the tracked one only changes once a
-  // challenger has read better for a sustained 15 minutes, precisely so an
-  // already-acted-on pick is never silently pulled out from under someone.
+  // Every currently-open system pick is tracked in parallel on the
+  // database/Track Record — a new best read gets posted and tracked the
+  // moment it appears, without waiting for an older pick to resolve first.
   const trackedBox = document.getElementById('trackedBox');
   if (trackedBox) {
-    if (!data.tracked) {
+    const list = data.trackedAll || (data.tracked ? [data.tracked] : []);
+    if (!list.length) {
       trackedBox.innerHTML = '';
     } else {
-      const t = data.tracked;
-      const since = new Date(t.trackedSince).toLocaleString();
-      let challengerHtml = '';
-      if (data.challenger) {
-        const remainMin = Math.max(0, Math.ceil((data.challenger.requiredMs - data.challenger.sinceMs) / 60000));
-        challengerHtml = `<div class="note" style="margin-top:4px;">${data.challenger.label} is reading better right now — needs to hold the lead for ${remainMin} more minute${remainMin === 1 ? '' : 's'} before it replaces this tracked pick.</div>`;
-      }
-      trackedBox.innerHTML = `
-        <div class="note" style="margin-top:10px;">📌 Officially tracked on our record: <strong>${t.label} — ${BIAS_LABEL[t.side]}</strong> (${t.confidence}/100), since ${since}.</div>
-        ${challengerHtml}
-      `;
+      trackedBox.innerHTML = list.map((t, i) => {
+        const since = new Date(t.trackedSince).toLocaleString();
+        const tag = i === 0 ? '📌 Currently tracked' : '📌 Also tracked (still resolving)';
+        return `<div class="note" style="margin-top:${i === 0 ? 10 : 4}px;">${tag}: <strong>${t.label} — ${BIAS_LABEL[t.side]}</strong> (${t.confidence}/100), since ${since}.</div>`;
+      }).join('');
     }
   }
 
