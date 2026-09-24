@@ -439,15 +439,22 @@ function resolveSignalFromCandles(sig, candles) {
   }
 
   const bestLevel = ['TP4', 'TP3', 'TP2', 'TP1'].find(l => seen.has(l)) || sig.best_level || null;
-  const status = seen.has('TP4') ? 'closed' : slHitAt ? 'closed' : 'open';
+  // The bot's setups only ever carry TP1-TP3 (no TP4 field) — closing a
+  // trade strictly on TP4 meant a bot signal that hit its own max target
+  // (TP3) and then just sat there could never actually close, so it never
+  // counted as a win. A signal closes once it reaches WHICHEVER of its own
+  // defined targets is highest, not a hardcoded TP4.
+  const topLevel = ['TP4', 'TP3', 'TP2', 'TP1'].find(l => levels.find(([lbl, lvl]) => lbl === l && lvl != null)) || null;
+  const reachedTop = topLevel && seen.has(topLevel);
+  const status = reachedTop ? 'closed' : slHitAt ? 'closed' : 'open';
   // Never disguise a reached target as an outright loss: once any TP has
   // actually printed, the worst honest outcome is "reached <bestLevel>, then
   // gave back the remainder" — not a full SL loss. Only a stop-out with zero
   // TPs touched at all is recorded as 'SL'. `slTouched` is tracked separately
   // (regardless of how the outcome reads) so alerts still fire on the actual
   // stop-loss touch either way.
-  const outcome = seen.has('TP4') ? 'TP4' : slHitAt ? (bestLevel || 'SL') : null;
-  const closedAt = seen.has('TP4') ? (hitHistory.find(h => h.level === 'TP4')?.time ?? Date.now()) : slHitAt;
+  const outcome = reachedTop ? topLevel : slHitAt ? (bestLevel || 'SL') : null;
+  const closedAt = reachedTop ? (hitHistory.find(h => h.level === topLevel)?.time ?? Date.now()) : slHitAt;
 
   return { hitHistory, bestLevel, status, outcome, slTouched: !!slHitAt, closedAt: closedAt ? new Date(closedAt).toISOString() : null };
 }

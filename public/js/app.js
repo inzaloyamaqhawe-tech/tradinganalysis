@@ -240,15 +240,8 @@ async function loadTrackRecord() {
       <div class="stat-chip"><div class="n">${s.losses}</div><div class="l">Stopped out</div></div>
       <div class="stat-chip"><div class="n">${s.open}</div><div class="l">Still open</div></div>
     `;
-    const bestBox = document.getElementById('trackBestMarketsBox');
-    if (data.bestMarkets?.length) {
-      bestBox.style.display = 'block';
-      document.getElementById('trackBestMarketsList').innerHTML = data.bestMarkets.slice(0, 8).map(m => `
-        <div class="sp-row"><span>${m.label}</span><b>${m.winRate != null ? m.winRate + '% win rate' : '—'} (${m.wins}W / ${m.losses}L)</b></div>
-      `).join('');
-    } else {
-      bestBox.style.display = 'none';
-    }
+    // Best-performing markets lives on the Dashboard chart only now — Track
+    // Record stays a straight win/loss ledger, per feedback.
     if (!data.recent.length) {
       rowsHost.innerHTML = `<tr><td colspan="8" class="note">No setups logged yet — check back once the engine has surfaced a few.</td></tr>`;
       return;

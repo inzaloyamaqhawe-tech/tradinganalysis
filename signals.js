@@ -234,7 +234,11 @@ const PATTERN_LABEL = {
 // stays ATR-relative, so it self-scales per asset instead of using a fixed
 // dollar/pip distance — a $0.07 DOGE move and a $4000 XAU move both get a
 // stop sized to *that instrument's own* recent volatility.
-const STRATEGY_SL_ATR = { CRT: 1.0, TREND: 1.2, BRK: 1.5, MREV: 1.0, PATTERN: 1.3, SMC: 1.3, WYCKOFF: 1.2, VOLBRK: 1.5 };
+// Widened 50% across the board (CRT/MREV were only 1.0x ATR) — a stop that
+// tight sat inside a single 1h candle's normal range, so an ordinary spike
+// bar (not even a reversal) was tagging SL before the setup got a real
+// chance to work, dragging down aggregate win rate on every instrument.
+const STRATEGY_SL_ATR = { CRT: 1.5, TREND: 1.8, BRK: 2.3, MREV: 1.5, PATTERN: 2.0, SMC: 2.0, WYCKOFF: 1.8, VOLBRK: 2.3 };
 const RISK_REWARD_TO_TP4 = 2; // 1 : 2
 
 function decimalsFor(price) {
