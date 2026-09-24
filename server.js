@@ -505,6 +505,34 @@ async function alertBotSignal(sig) {
 //   - Because posting is driven by server-side poll state, not by who's
 //     looking or when, two different users logging in at different times
 //     see the exact same Track Record — there's no per-visitor "pick".
+// Once posted, a recommendation is never aborted just because the engine's
+// read for that instrument moved on — a user may already have acted on it.
+// It's tracked to its real conclusion (a target hit, or the stop) via
+// resolveSignalFromCandles, same as always. What CAN happen is a different
+// instrument overtaking it as the best read — but even then, we don't
+// switch the instant that happens (a momentary flicker shouldn't yank the
+// rug under someone who just took the posted trade). A challenger has to
+// stay the best read for a sustained window before it actually gets
+// posted, and the previous pick just keeps resolving in parallel — see
+// SUSTAINED_CHALLENGE_MS below. This is in-memory (resets on a restart/
+// redeploy), which just means a challenger's clock restarts too — not a
+// correctness problem, only a minor delay in an edge case.
+const SUSTAINED_CHALLENGE_MS = 15 * 60 * 1000;
+let pendingChallenger = null; // { instrument, firstSeenAt }
+
+async function postNewSystemSignal(key, result) {
+  const row = await store.logSignal({
+    source: 'system',
+    instrument: key, strategy: result.strategy, regime: result.regime, side: result.signal,
+    entry: result.levels.entry, sl: result.levels.sl,
+    tp1: result.levels.tp1, tp2: result.levels.tp2, tp3: result.levels.tp3, tp4: result.levels.tp4,
+    confidence: result.confidence,
+  });
+  await alertNewSignal(row);
+  await store.updateSignalOutcome(row.id, { alerted_new: true });
+  return row;
+}
+
 async function trackSignals() {
   const results = {};
   // XAU is deliberately excluded — the bot manages that instrument's
@@ -527,14 +555,13 @@ async function trackSignals() {
     }
   } catch (e) { console.error('bot signal alert check failed', e.message); }
 
-  // ---- Resolve (or invalidate) whatever is currently logged as open. At
-  // most one system-sourced row is ever open by construction, but this loop
-  // makes no assumption about that — it just resolves every open row it
-  // finds. Bot-sourced rows (XAU) are explicitly skipped: the bot resolves
-  // its own signals directly (see sql/BOT_INSTRUCTIONS.md) — our candle-walk
-  // logic has no business touching them.
-  const openSignals = (await store.getOpenSignals()).filter(s => s.source !== 'bot');
-  for (const sig of openSignals) {
+  // ---- Resolve every open system signal via a real candle SL/TP walk.
+  // No assumption of exactly one open row — a sustained challenger can add
+  // a new one while an older pick is still resolving on its own (see
+  // below). Bot-sourced rows (XAU) are explicitly skipped: the bot
+  // resolves its own signals directly (see sql/BOT_INSTRUCTIONS.md).
+  const openSystemSignals = (await store.getOpenSignals()).filter(s => s.source !== 'bot');
+  for (const sig of openSystemSignals) {
     const key = sig.instrument;
     let candles;
     try { candles = await getCandlesFor(key); } catch (e) { candles = []; }
@@ -543,59 +570,59 @@ async function trackSignals() {
     const resolved = resolveSignalFromCandles(sig, candles);
     const changed = JSON.stringify(resolved.hitHistory) !== JSON.stringify(sig.hit_history || [])
       || resolved.bestLevel !== sig.best_level || resolved.status !== sig.status;
-    if (changed) {
-      const patch = { hit_history: resolved.hitHistory, best_level: resolved.bestLevel };
-      if (resolved.status === 'closed') { patch.status = 'closed'; patch.outcome = resolved.outcome; patch.closed_at = resolved.closedAt; }
+    if (!changed) continue;
 
-      const alertedLevels = new Set(sig.alerted_levels || []);
-      const newlyHitLevels = resolved.hitHistory.map(h => h.level).filter(l => !alertedLevels.has(l));
-      const newlyHitSL = resolved.slTouched && !alertedLevels.has('SL');
-      const touchLabels = [...newlyHitLevels, ...(newlyHitSL ? ['SL'] : [])];
-      if (touchLabels.length) {
-        await alertLevelTouch(sig, touchLabels);
-        patch.alerted_levels = [...alertedLevels, ...touchLabels];
-      }
-      await store.updateSignalOutcome(sig.id, patch);
-    }
+    const patch = { hit_history: resolved.hitHistory, best_level: resolved.bestLevel };
+    if (resolved.status === 'closed') { patch.status = 'closed'; patch.outcome = resolved.outcome; patch.closed_at = resolved.closedAt; }
 
-    // Still open after the candle walk above? Check whether the engine
-    // itself has moved on for this instrument — an open recommendation the
-    // engine no longer even sees is stale and shouldn't block the next
-    // pick indefinitely, regardless of whether it's still "the" pick.
-    const stillOpen = resolved.status !== 'closed';
-    if (stillOpen) {
-      const live = results[key];
-      const stillSameSetup = live && live.signal === sig.side && live.strategy === sig.strategy;
-      if (!stillSameSetup) {
-        await store.updateSignalOutcome(sig.id, { status: 'closed', outcome: 'INVALIDATED', closed_at: new Date().toISOString() });
-      }
+    const alertedLevels = new Set(sig.alerted_levels || []);
+    const newlyHitLevels = resolved.hitHistory.map(h => h.level).filter(l => !alertedLevels.has(l));
+    const newlyHitSL = resolved.slTouched && !alertedLevels.has('SL');
+    const touchLabels = [...newlyHitLevels, ...(newlyHitSL ? ['SL'] : [])];
+    if (touchLabels.length) {
+      await alertLevelTouch(sig, touchLabels);
+      patch.alerted_levels = [...alertedLevels, ...touchLabels];
     }
+    await store.updateSignalOutcome(sig.id, patch);
   }
 
-  // ---- Post at most one new recommendation this cycle, and only when
-  // nothing of ours is pending — the highest-confidence actionable setup
-  // across every non-XAU tracked market. XAU's own pending/resolved state
-  // (managed entirely by the bot) never blocks this, and this never
-  // touches XAU — they're two fully separate single-active-recommendation
-  // tracks now. ----
-  const stillPending = (await store.getOpenSignals()).some(s => s.source !== 'bot');
-  if (stillPending) return;
-
+  // ---- Decide whether to post a new recommendation. The most recently
+  // posted still-open system signal is "the champion" — the one whatever
+  // challenger logic below compares against. Older still-open ones (if a
+  // previous challenger already won) are already-superseded picks quietly
+  // resolving on their own via the loop above. ----
   const actionable = ENGINE_KEYS
     .map(key => ({ key, result: results[key] }))
     .filter(({ result }) => result && result.signal !== 'HOLD' && result.levels && result.confidence != null);
-  if (!actionable.length) return;
-
+  if (!actionable.length) { pendingChallenger = null; return; }
   const best = actionable.reduce((a, b) => (b.result.confidence > a.result.confidence ? b : a));
-  const row = await store.logSignal({
-    source: 'system',
-    instrument: best.key, strategy: best.result.strategy, regime: best.result.regime, side: best.result.signal,
-    entry: best.result.levels.entry, sl: best.result.levels.sl,
-    tp1: best.result.levels.tp1, tp2: best.result.levels.tp2, tp3: best.result.levels.tp3, tp4: best.result.levels.tp4,
-    confidence: best.result.confidence,
-  });
-  await alertNewSignal(row);
-  await store.updateSignalOutcome(row.id, { alerted_new: true });
+
+  const stillOpen = (await store.getOpenSignals()).filter(s => s.source !== 'bot');
+  const champion = stillOpen.length
+    ? stillOpen.reduce((a, b) => (new Date(b.created_at) > new Date(a.created_at) ? b : a))
+    : null;
+
+  if (!champion) {
+    // Nothing currently open — post the best read immediately, no wait.
+    pendingChallenger = null;
+    await postNewSystemSignal(best.key, best.result);
+    return;
+  }
+
+  if (best.key === champion.instrument) {
+    // The champion is still the best read — no challenger to track.
+    pendingChallenger = null;
+    return;
+  }
+
+  if (pendingChallenger?.instrument === best.key) {
+    if (Date.now() - pendingChallenger.firstSeenAt >= SUSTAINED_CHALLENGE_MS) {
+      await postNewSystemSignal(best.key, best.result);
+      pendingChallenger = null;
+    }
+  } else {
+    pendingChallenger = { instrument: best.key, firstSeenAt: Date.now() };
+  }
 }
 
 // A reached target (TP1-TP4) is a win even if the position later gave back
@@ -857,7 +884,27 @@ app.get('/api/insights', async (req, res) => {
     ? actionable.reduce((best, s) => (s.confidence > best.confidence ? s : best))
     : null);
 
-  const payload = { locked: false, plan, expiresAt: sub.expires_at, signals, topPick, proTools, elite };
+  // The officially-tracked pick (what's actually posted to the database/
+  // Track Record right now) can legitimately differ from topPick above —
+  // topPick is "what reads best on this exact request," the tracked one
+  // only changes after a challenger sustains the lead for 15 minutes (see
+  // trackSignals in server.js). Surfacing both, with the tracked one's
+  // real timestamp, is what "PAXG was best 1-2 minutes ago, LINK reads
+  // better now" needs: the user can see it's the same PAXG trade still
+  // being tracked, not something silently swapped out from under them.
+  const openSystem = (await store.getOpenSignals()).filter(s => s.source !== 'bot');
+  const tracked = openSystem.length
+    ? openSystem.reduce((a, b) => (new Date(b.created_at) > new Date(a.created_at) ? b : a))
+    : null;
+  const challenger = pendingChallenger && pendingChallenger.instrument !== tracked?.instrument
+    ? { instrument: pendingChallenger.instrument, label: LABELS[pendingChallenger.instrument], sinceMs: Date.now() - pendingChallenger.firstSeenAt, requiredMs: SUSTAINED_CHALLENGE_MS }
+    : null;
+
+  const payload = {
+    locked: false, plan, expiresAt: sub.expires_at, signals, topPick, proTools, elite,
+    tracked: tracked ? { instrument: tracked.instrument, label: LABELS[tracked.instrument], side: tracked.side, confidence: tracked.confidence, trackedSince: tracked.created_at } : null,
+    challenger,
+  };
 
   if (proTools) {
     payload.favourites = sub.favourites || [];
@@ -962,8 +1009,12 @@ app.get('/api/performance', async (req, res) => {
   const proTools = atLeast(plan, 'pro');
 
   const rows = await store.listSignals(500);
-  const stats = computePerformanceStats(rows); // aggregate stats stay public either way — that's the credibility number
-  const recent = rows.slice(0, 50).map(r => {
+  const stats = computePerformanceStats(rows); // aggregate stats computed on the full history, invalidated included
+  // The displayed list only ever shows real outcomes (a target hit or the
+  // stop) — an invalidated row isn't a result worth showing individually,
+  // just noise. Now rare going forward: trackSignals() no longer aborts a
+  // posted pick just because the engine's read moved on.
+  const recent = rows.filter(r => r.outcome !== 'INVALIDATED').slice(0, 50).map(r => {
     if (r.status === 'open' && !premium) {
       return { id: r.id, status: 'open', locked: true, created_at: r.created_at };
     }

@@ -8,6 +8,18 @@ Everything below assumes the bot only posts **XAU/USD** signals sourced from
 professional Telegram channels. If that ever changes, the `instrument`
 column already supports any symbol — nothing else needs to change.
 
+## 0. Dedupe across channels before posting
+
+If the bot watches multiple professional channels and more than one of them
+calls the **same direction** (e.g. all 3 say SELL) within a short window of
+each other, post **one** row for that call, not one per channel. Two or
+three simultaneous rows for what's really the same signal just fills the
+table with noise and makes the track record misleading (it would look like
+3 separate calls with 3 separate outcomes for what was actually one trade
+idea). If different channels genuinely disagree (one says BUY, another
+SELL), that's a real conflict — use your own judgement on which one to post,
+or skip posting until they agree; don't post both.
+
 ## 1. Posting a brand-new signal
 
 The instant a professional's XAU call is picked up, insert one row:

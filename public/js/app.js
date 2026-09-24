@@ -157,15 +157,22 @@ async function loadDashboardCharts() {
 // ---------- Notifications ----------
 const NOTIF_ICON = { new_signal: '📈', level_touch: '🎯', bot_signal: '🥇' };
 async function loadNotifications() {
-  const email = currentUser?.email || knownEmail();
+  // Deliberately currentUser only, never the knownEmail() fallback — that's
+  // just a remembered string from typing an email into a field, not proof
+  // of a real session. Using it here was notifying visitors before they'd
+  // ever actually logged in.
+  const email = currentUser?.email;
   const listHost = document.getElementById('notifList');
   const lockedBox = document.getElementById('notifLockedBox');
-  if (!email) { lockedBox.style.display = 'block'; listHost.innerHTML = ''; return; }
+  const permRow = document.getElementById('notifPermissionRow');
+  if (!email) { lockedBox.style.display = 'block'; permRow.style.display = 'none'; listHost.innerHTML = ''; return; }
   try {
     const res = await fetch(`/api/notifications?email=${encodeURIComponent(email)}`, { headers: authHeaders() });
-    if (res.status === 402) { lockedBox.style.display = 'block'; listHost.innerHTML = ''; return; }
+    if (res.status === 402) { lockedBox.style.display = 'block'; permRow.style.display = 'none'; listHost.innerHTML = ''; return; }
     const data = await res.json();
     lockedBox.style.display = 'none';
+    permRow.style.display = ('Notification' in window && Notification.permission !== 'granted') ? 'flex' : 'none';
+    pushNewNotifications();
     if (!data.notifications?.length) {
       listHost.innerHTML = '<p class="note">No notifications yet — you\'ll see strong system signals and professional XAU calls here the moment they happen.</p>';
       return;
@@ -192,9 +199,20 @@ async function loadNotifications() {
   }
 }
 document.getElementById('notifPricingBtn')?.addEventListener('click', () => showView('pricing'));
+document.getElementById('notifEnableBtn')?.addEventListener('click', async () => {
+  const granted = await requestNotifPermission();
+  const note = document.getElementById('notifPermissionNote');
+  if (granted) {
+    document.getElementById('notifPermissionRow').style.display = 'none';
+    setLastSeenNotifId(0); // re-baseline so the very next check can start pushing fresh ones
+    pushNewNotifications();
+  } else {
+    note.textContent = 'Desktop notifications are blocked for this site — check your browser\'s site settings to allow them.';
+  }
+});
 
 async function refreshNotifBadge() {
-  const email = currentUser?.email || knownEmail();
+  const email = currentUser?.email; // session-only — see loadNotifications' note
   const badge = document.getElementById('notifBadge');
   if (!email) { badge.style.display = 'none'; return; }
   try {
@@ -202,6 +220,7 @@ async function refreshNotifBadge() {
     const data = await res.json();
     if (data.count > 0) { badge.textContent = data.count > 99 ? '99+' : String(data.count); badge.style.display = 'inline-flex'; }
     else { badge.style.display = 'none'; }
+    await pushNewNotifications();
   } catch (e) { /* badge just stays as-is on a network blip */ }
 }
 setInterval(refreshNotifBadge, 60000);
@@ -535,6 +554,45 @@ connectBinanceLive();
 // ---------- Remember the visitor's email so card clicks know if they're premium ----------
 function rememberEmail(email) { try { localStorage.setItem('ta_email', email); } catch (e) {} }
 function knownEmail() { try { return localStorage.getItem('ta_email') || ''; } catch (e) { return ''; } }
+
+// ---------- Real OS-level push notifications (not an in-tab badge you
+// have to be looking at — an actual desktop notification via the browser's
+// Notification API, so it shows up even if this tab isn't focused). ----------
+function getLastSeenNotifId() { try { return parseInt(localStorage.getItem('ta_last_notif_id') || '0', 10); } catch (e) { return 0; } }
+function setLastSeenNotifId(id) { try { localStorage.setItem('ta_last_notif_id', String(id)); } catch (e) {} }
+
+async function requestNotifPermission() {
+  if (!('Notification' in window)) return false;
+  if (Notification.permission === 'granted') return true;
+  if (Notification.permission === 'denied') return false;
+  try { return (await Notification.requestPermission()) === 'granted'; } catch (e) { return false; }
+}
+
+// Only ever runs for a genuinely logged-in session (called from
+// refreshNotifBadge, which already gates on currentUser). Fires a real
+// desktop notification for whatever's new since the last check — but on
+// the very first check ever (no baseline yet), it just records where
+// things stand instead of replaying the entire backlog as a flood of pushes.
+async function pushNewNotifications() {
+  if (!currentUser?.email || !('Notification' in window) || Notification.permission !== 'granted') return;
+  try {
+    const res = await fetch(`/api/notifications?email=${encodeURIComponent(currentUser.email)}`, { headers: authHeaders() });
+    if (!res.ok) return;
+    const data = await res.json();
+    const list = data.notifications || [];
+    if (!list.length) return;
+    const maxId = Math.max(...list.map(n => n.id));
+    const lastSeen = getLastSeenNotifId();
+    if (lastSeen === 0) { setLastSeenNotifId(maxId); return; }
+    list.filter(n => n.id > lastSeen).sort((a, b) => a.id - b.id).forEach(n => {
+      try {
+        const notif = new Notification(n.title, { body: n.body || '', icon: 'img/mark.png', tag: `ta-notif-${n.id}` });
+        notif.onclick = () => { window.focus(); showView('notifications'); notif.close(); };
+      } catch (e) { /* one bad notification shouldn't block the rest */ }
+    });
+    setLastSeenNotifId(maxId);
+  } catch (e) { /* non-critical — next 60s check tries again */ }
+}
 
 // ---------- Chart modal: click a card to see its data. ----------
 // Free: line/candle chart of tracked price history.
@@ -1052,7 +1110,7 @@ function updateAuthUI() {
   if (loggedIn) {
     // Username, not email, everywhere the frontend displays "who you are" —
     // the email stays purely a backend/login credential from here on.
-    const displayName = currentUser.username ? `@${currentUser.username}` : currentUser.email;
+    const displayName = currentUser.username || currentUser.email;
     document.getElementById('authPill').textContent = displayName;
     document.getElementById('authWhoEmail').textContent = displayName;
     const planLabel = PLANS?.[currentUser.plan]?.label || currentUser.plan;
@@ -1268,6 +1326,30 @@ function renderInsights(data) {
         </div>` : ''}
     </div>
   `;
+
+  // What's actually posted/tracked on the database right now can honestly
+  // differ from "best opportunity right now" above — that's a live read
+  // that can shift market to market; the tracked one only changes once a
+  // challenger has read better for a sustained 15 minutes, precisely so an
+  // already-acted-on pick is never silently pulled out from under someone.
+  const trackedBox = document.getElementById('trackedBox');
+  if (trackedBox) {
+    if (!data.tracked) {
+      trackedBox.innerHTML = '';
+    } else {
+      const t = data.tracked;
+      const since = new Date(t.trackedSince).toLocaleString();
+      let challengerHtml = '';
+      if (data.challenger) {
+        const remainMin = Math.max(0, Math.ceil((data.challenger.requiredMs - data.challenger.sinceMs) / 60000));
+        challengerHtml = `<div class="note" style="margin-top:4px;">${data.challenger.label} is reading better right now — needs to hold the lead for ${remainMin} more minute${remainMin === 1 ? '' : 's'} before it replaces this tracked pick.</div>`;
+      }
+      trackedBox.innerHTML = `
+        <div class="note" style="margin-top:10px;">📌 Officially tracked on our record: <strong>${t.label} — ${BIAS_LABEL[t.side]}</strong> (${t.confidence}/100), since ${since}.</div>
+        ${challengerHtml}
+      `;
+    }
+  }
 
   document.getElementById('filterBox').style.display = data.proTools ? 'block' : 'none';
   if (data.proTools) {
