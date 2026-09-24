@@ -1,7 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const crypto = require('crypto');
-const { createMemoryStorage, createPgStorage } = require('./storage');
+const { createMemoryStorage, createPgStorage, createMysqlStorage } = require('./storage');
 const { runEngine, buildSyntheticCandles, emaSeries, EMA_FAST_PERIOD, EMA_SLOW_PERIOD, PATTERN_LABEL } = require('./signals');
 const { sendMail } = require('./mailer');
 const twelveData = require('./twelvedata');
@@ -28,12 +28,29 @@ const PAYPAL_LINK = process.env.PAYPAL_LINK || `https://paypal.me/${PAYPAL_HANDL
 const PRICE_MONTHLY = process.env.PRICE_LABEL || `R${PLANS.premium.price}/month`;
 function payLinkFor(plan) { return `https://paypal.me/${PAYPAL_HANDLE}/${PLANS[plan]?.price ?? PLANS.premium.price}`; }
 function priceLabelFor(plan) { return `R${PLANS[plan]?.price ?? PLANS.premium.price}/month`; }
-const DEMO_MODE = !process.env.DATABASE_URL;
+// Same env var names as the PHP admin's own db.php (DB_HOST/DB_USER/
+// DB_PASS/DB_NAME, MYSQL_* as aliases) so both apps configure against the
+// one Xneelo MySQL database the exact same way.
+const MYSQL_HOST = process.env.DB_HOST || process.env.MYSQL_HOST;
+const MYSQL_USER = process.env.DB_USER || process.env.MYSQL_USER;
+const MYSQL_PASS = process.env.DB_PASS || process.env.MYSQL_PASSWORD;
+const MYSQL_NAME = process.env.DB_NAME || process.env.MYSQL_DATABASE;
+const HAS_MYSQL = !!(MYSQL_HOST && MYSQL_USER && MYSQL_NAME);
+const DEMO_MODE = !HAS_MYSQL && !process.env.DATABASE_URL;
 
-// ---- Storage: real Postgres if DATABASE_URL is set, else in-memory demo mode ----
+// ---- Storage: MySQL (Xneelo, shared with the PHP admin + bot) takes
+// priority when configured; Postgres if DATABASE_URL is set instead;
+// otherwise in-memory demo mode with no real payments required. ----
 let store;
-if (DEMO_MODE) {
-  console.log('[demo mode] no DATABASE_URL set — using in-memory storage, no real payments required.');
+if (HAS_MYSQL) {
+  const mysql = require('mysql2/promise');
+  const pool = mysql.createPool({
+    host: MYSQL_HOST, user: MYSQL_USER, password: MYSQL_PASS, database: MYSQL_NAME,
+    waitForConnections: true, connectionLimit: 10, charset: 'utf8mb4_general_ci',
+  });
+  store = createMysqlStorage(pool);
+} else if (DEMO_MODE) {
+  console.log('[demo mode] no DB_HOST/DATABASE_URL set — using in-memory storage, no real payments required.');
   store = createMemoryStorage();
 } else {
   const { Pool } = require('pg');
