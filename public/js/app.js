@@ -216,15 +216,17 @@ async function loadNotifications() {
   const listHost = document.getElementById('notifList');
   const lockedBox = document.getElementById('notifLockedBox');
   const permRow = document.getElementById('notifPermissionRow');
+  const actionsRow = document.getElementById('notifActionsRow');
   const seeMoreBtn = document.getElementById('notifSeeMoreBtn');
   notifOffset = 0;
   notifRows = [];
-  if (!email) { lockedBox.style.display = 'block'; permRow.style.display = 'none'; listHost.innerHTML = ''; seeMoreBtn.style.display = 'none'; return; }
+  if (!email) { lockedBox.style.display = 'block'; permRow.style.display = 'none'; actionsRow.style.display = 'none'; listHost.innerHTML = ''; seeMoreBtn.style.display = 'none'; return; }
   try {
     const res = await fetch(`/api/notifications?email=${encodeURIComponent(email)}&limit=${NOTIF_PAGE_SIZE}&offset=0`, { headers: authHeaders() });
-    if (res.status === 402) { lockedBox.style.display = 'block'; permRow.style.display = 'none'; listHost.innerHTML = ''; seeMoreBtn.style.display = 'none'; return; }
+    if (res.status === 402) { lockedBox.style.display = 'block'; permRow.style.display = 'none'; actionsRow.style.display = 'none'; listHost.innerHTML = ''; seeMoreBtn.style.display = 'none'; return; }
     const data = await res.json();
     lockedBox.style.display = 'none';
+    actionsRow.style.display = 'flex';
     permRow.style.display = ('Notification' in window && Notification.permission !== 'granted') ? 'flex' : 'none';
     pushNewNotifications();
     notifRows = data.notifications || [];
