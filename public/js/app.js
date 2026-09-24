@@ -46,10 +46,165 @@ navItems.forEach(btn => btn.addEventListener('click', () => showView(btn.dataset
 function routeFromHash() {
   const name = (window.location.hash.replace('#/', '') || 'dashboard').trim();
   const valid = [...views].some(v => v.dataset.view === name);
-  showView(valid ? name : 'dashboard');
-  if (name === 'track') loadTrackRecord();
+  const shown = valid ? name : 'dashboard';
+  showView(shown);
+  if (shown === 'track') loadTrackRecord();
+  if (shown === 'dashboard') loadDashboardCharts();
+  if (shown === 'notifications') loadNotifications();
 }
 window.addEventListener('hashchange', routeFromHash);
+
+// ---------- Dashboard charts (plain canvas, matching the rest of this
+// app's hand-rolled charting — no charting library dependency) ----------
+function sizeCanvasToWrap(canvas) {
+  const wrap = canvas.parentElement;
+  const dpr = window.devicePixelRatio || 1;
+  const w = wrap.clientWidth, h = wrap.clientHeight;
+  canvas.width = w * dpr; canvas.height = h * dpr;
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return { ctx, w, h };
+}
+
+function drawBarChart(canvas, items) {
+  const { ctx, w, h } = sizeCanvasToWrap(canvas);
+  ctx.clearRect(0, 0, w, h);
+  if (!items.length) return;
+  const padTop = 10, padBottom = 34, padSide = 8;
+  const chartH = h - padTop - padBottom;
+  const barSlot = (w - padSide * 2) / items.length;
+  const barW = Math.min(56, barSlot * 0.6);
+  items.forEach((it, i) => {
+    const pct = Math.max(0, Math.min(100, it.winRate ?? 0));
+    const barH = (pct / 100) * chartH;
+    const x = padSide + i * barSlot + (barSlot - barW) / 2;
+    const y = padTop + (chartH - barH);
+    const color = pct >= 60 ? '#2fd480' : pct >= 40 ? '#f2b84b' : '#ff5d6c';
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    const r = 6;
+    ctx.moveTo(x, y + barH);
+    ctx.lineTo(x, y + r);
+    ctx.arcTo(x, y, x + r, y, r);
+    ctx.lineTo(x + barW - r, y);
+    ctx.arcTo(x + barW, y, x + barW, y + r, r);
+    ctx.lineTo(x + barW, y + barH);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.fillStyle = '#e7edf7'; ctx.font = '700 12px sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText(it.winRate != null ? `${it.winRate}%` : '—', x + barW / 2, y - 6);
+    ctx.fillStyle = '#8b98ad'; ctx.font = '11px sans-serif';
+    const label = it.label.length > 10 ? it.label.slice(0, 9) + '…' : it.label;
+    ctx.fillText(label, x + barW / 2, h - padBottom + 16);
+  });
+}
+
+function drawLineChart(canvas, points, color) {
+  const { ctx, w, h } = sizeCanvasToWrap(canvas);
+  ctx.clearRect(0, 0, w, h);
+  const padTop = 14, padBottom = 22, padSide = 10;
+  const chartH = h - padTop - padBottom;
+  const n = points.length;
+  const xFor = (i) => padSide + (i / (n - 1 || 1)) * (w - padSide * 2);
+  const yFor = (pct) => padTop + chartH - (Math.max(0, Math.min(100, pct)) / 100) * chartH;
+
+  // 50% reference line
+  ctx.strokeStyle = 'rgba(139,152,173,.25)'; ctx.setLineDash([3, 3]); ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(padSide, yFor(50)); ctx.lineTo(w - padSide, yFor(50)); ctx.stroke();
+  ctx.setLineDash([]);
+
+  const known = points.filter(p => p.winRate != null);
+  if (known.length >= 2) {
+    ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.beginPath();
+    let started = false;
+    points.forEach((p, i) => {
+      if (p.winRate == null) return;
+      const x = xFor(i), y = yFor(p.winRate);
+      if (!started) { ctx.moveTo(x, y); started = true; } else { ctx.lineTo(x, y); }
+    });
+    ctx.stroke();
+  }
+  points.forEach((p, i) => {
+    const x = xFor(i);
+    if (p.winRate != null) {
+      const y = yFor(p.winRate);
+      ctx.fillStyle = color; ctx.beginPath(); ctx.arc(x, y, 3, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.fillStyle = '#8b98ad'; ctx.font = '10px sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText(p.day, x, h - padBottom + 14);
+  });
+}
+
+async function loadDashboardCharts() {
+  try {
+    const res = await fetch('/api/dashboard-stats');
+    const data = await res.json();
+    const barEmpty = document.getElementById('dashBarEmpty');
+    if (!data.topAssets?.length) {
+      barEmpty.style.display = 'block';
+      document.getElementById('dashBarChart').style.display = 'none';
+    } else {
+      barEmpty.style.display = 'none';
+      document.getElementById('dashBarChart').style.display = 'block';
+      drawBarChart(document.getElementById('dashBarChart'), data.topAssets);
+    }
+    drawLineChart(document.getElementById('dashSellChart'), data.weekly.sell, '#ff5d6c');
+    drawLineChart(document.getElementById('dashBuyChart'), data.weekly.buy, '#2fd480');
+  } catch (e) { /* charts just stay blank on a network blip — non-critical */ }
+}
+
+// ---------- Notifications ----------
+const NOTIF_ICON = { new_signal: '📈', level_touch: '🎯', bot_signal: '🥇' };
+async function loadNotifications() {
+  const email = currentUser?.email || knownEmail();
+  const listHost = document.getElementById('notifList');
+  const lockedBox = document.getElementById('notifLockedBox');
+  if (!email) { lockedBox.style.display = 'block'; listHost.innerHTML = ''; return; }
+  try {
+    const res = await fetch(`/api/notifications?email=${encodeURIComponent(email)}`, { headers: authHeaders() });
+    if (res.status === 402) { lockedBox.style.display = 'block'; listHost.innerHTML = ''; return; }
+    const data = await res.json();
+    lockedBox.style.display = 'none';
+    if (!data.notifications?.length) {
+      listHost.innerHTML = '<p class="note">No notifications yet — you\'ll see strong system signals and professional XAU calls here the moment they happen.</p>';
+      return;
+    }
+    listHost.innerHTML = data.notifications.map(n => `
+      <div class="notif-row ${n.read ? '' : 'unread'}" data-id="${n.id}">
+        <div class="notif-icon">${NOTIF_ICON[n.type] || '🔔'}</div>
+        <div>
+          <div class="notif-title">${n.title}</div>
+          ${n.body ? `<div class="notif-body">${n.body.replace(/\n/g, '<br>')}</div>` : ''}
+          <div class="notif-time">${new Date(n.created_at).toLocaleString()}</div>
+        </div>
+      </div>
+    `).join('');
+    listHost.querySelectorAll('.notif-row.unread').forEach(row => {
+      row.addEventListener('click', async () => {
+        row.classList.remove('unread');
+        try { await fetch(`/api/notifications/${row.dataset.id}/read`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify({ email }) }); } catch (e) {}
+        refreshNotifBadge();
+      });
+    });
+  } catch (e) {
+    listHost.innerHTML = '<p class="note">Failed to load notifications.</p>';
+  }
+}
+document.getElementById('notifPricingBtn')?.addEventListener('click', () => showView('pricing'));
+
+async function refreshNotifBadge() {
+  const email = currentUser?.email || knownEmail();
+  const badge = document.getElementById('notifBadge');
+  if (!email) { badge.style.display = 'none'; return; }
+  try {
+    const res = await fetch(`/api/notifications/unread-count?email=${encodeURIComponent(email)}`, { headers: authHeaders() });
+    const data = await res.json();
+    if (data.count > 0) { badge.textContent = data.count > 99 ? '99+' : String(data.count); badge.style.display = 'inline-flex'; }
+    else { badge.style.display = 'none'; }
+  } catch (e) { /* badge just stays as-is on a network blip */ }
+}
+setInterval(refreshNotifBadge, 60000);
 
 async function loadTrackRecord() {
   const statsHost = document.getElementById('trackStats');
@@ -883,6 +1038,7 @@ async function refreshMe() {
     if (!res.ok) { clearToken(); } else { currentUser = await res.json(); currentFavourites = currentUser.favourites || []; }
   } catch (e) { /* leave currentUser as-is on a network blip */ }
   updateAuthUI();
+  refreshNotifBadge();
 }
 
 function updateAuthUI() {
@@ -974,7 +1130,7 @@ document.getElementById('logoutBtn').addEventListener('click', logout);
 document.getElementById('acctLogoutBtn').addEventListener('click', logout);
 document.getElementById('goInsightsFromHero').addEventListener('click', () => showView('insights'));
 document.getElementById('acctPricingBtn').addEventListener('click', () => showView('pricing'));
-document.getElementById('acctGoHeroBtn').addEventListener('click', () => showView('dashboard'));
+document.getElementById('acctGoHeroBtn').addEventListener('click', () => showView('markets'));
 
 // ---------- Pricing: element refs used by subscribeToPlan/demoActivatePlan above ----------
 const subEmailInput = document.getElementById('subEmail');

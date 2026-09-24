@@ -26,8 +26,10 @@
     </a>
     <nav class="mainnav" id="mainnav">
       <button class="mainnav-item" data-view="dashboard">Dashboard</button>
+      <button class="mainnav-item" data-view="markets">Markets</button>
       <button class="mainnav-item" data-view="insights">Insights <span class="lock">🔒</span></button>
       <button class="mainnav-item" data-view="track">Track Record</button>
+      <button class="mainnav-item" data-view="notifications">Notifications <span class="badge-count" id="notifBadge" style="display:none;"></span></button>
       <button class="mainnav-item" data-view="pricing">Pricing</button>
       <button class="mainnav-item" data-view="account">My Account</button>
       <button class="mainnav-item" data-view="risk">Risk Disclosure</button>
@@ -44,8 +46,37 @@
     🧪 <strong>Demo mode</strong> — nothing here charges real money or persists permanently. Use Pricing → Simulate Payment to test the subscriber experience end to end.
   </div>
 
-  <!-- DASHBOARD -->
+  <!-- DASHBOARD (charts landing page) -->
   <section class="view active" data-view="dashboard">
+    <h1>Dashboard</h1>
+    <p class="section-sub">Real, honest track-record numbers — not a highlight reel. Every closed setup counts here, from the system's own engine and from our professional XAU/USD calls alike.</p>
+
+    <div class="panel" style="margin-bottom:20px;">
+      <div class="eyebrow">🏆 Best-performing markets (win rate)</div>
+      <div class="chart-canvas-wrap" style="height:280px;">
+        <canvas id="dashBarChart"></canvas>
+      </div>
+      <p class="note" id="dashBarEmpty" style="display:none;">No resolved setups yet — check back once a few have closed.</p>
+    </div>
+
+    <div class="dash-line-grid">
+      <div class="panel">
+        <div class="eyebrow">📉 Sell win rate by weekday</div>
+        <div class="chart-canvas-wrap" style="height:180px;">
+          <canvas id="dashSellChart"></canvas>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="eyebrow">📈 Buy win rate by weekday</div>
+        <div class="chart-canvas-wrap" style="height:180px;">
+          <canvas id="dashBuyChart"></canvas>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- MARKETS -->
+  <section class="view" data-view="markets">
     <div class="hero-banner">
       <div class="hero-copy">
         <div class="eyebrow">Market analysis · trading intelligence</div>
@@ -199,6 +230,17 @@
       </div>
     </div>
     <div class="disclaimer">Historical accuracy does not guarantee future results. "Open" setups haven't yet hit a stop-loss or final target.</div>
+  </section>
+
+  <!-- NOTIFICATIONS -->
+  <section class="view" data-view="notifications">
+    <h1>Notifications</h1>
+    <p class="section-sub">Every strong signal the system generates, and every professional XAU/USD call the moment it's posted. A Pro Trader Tools feature.</p>
+    <div class="panel" id="notifLockedBox" style="display:none;">
+      <p>Subscribe to Pro Trader Tools or higher to get notified the instant a strong setup appears.</p>
+      <button id="notifPricingBtn">See Pricing</button>
+    </div>
+    <div id="notifList"></div>
   </section>
 
   <!-- PRICING -->

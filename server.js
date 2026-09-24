@@ -463,19 +463,28 @@ async function getAlertRecipients() {
 }
 async function alertNewSignal(sig) {
   if (sig.confidence == null || sig.confidence < HIGH_CONFIDENCE_THRESHOLD) return;
-  const recipients = await getAlertRecipients();
-  if (!recipients.length) return;
   const subject = `New ${sig.confidence}%-confidence setup: ${LABELS[sig.instrument] || sig.instrument} (${sig.side})`;
   const body = `${LABELS[sig.instrument] || sig.instrument} — ${sig.side} via ${sig.strategy}, confidence ${sig.confidence}/100.\nEntry: ${sig.entry}\nStop loss: ${sig.sl}\nTargets: ${sig.tp1}, ${sig.tp2}, ${sig.tp3}, ${sig.tp4}\n\nInformational only — conduct your own analysis before trading.`;
+  const recipients = await getAlertRecipients();
   for (const r of recipients) sendMail(r.email, subject, body);
+  await store.createNotification({ signalId: sig.id, type: 'new_signal', minPlan: 'pro', title: subject, body, instrument: sig.instrument });
 }
 async function alertLevelTouch(sig, newLevels) {
   if (!newLevels.length) return;
-  const recipients = await getAlertRecipients();
-  if (!recipients.length) return;
   const subject = `${LABELS[sig.instrument] || sig.instrument} touched ${newLevels.join(', ')}`;
   const body = `Your tracked setup on ${LABELS[sig.instrument] || sig.instrument} (${sig.side} via ${sig.strategy}) just touched: ${newLevels.join(', ')}.\n\nInformational only.`;
+  const recipients = await getAlertRecipients();
   for (const r of recipients) sendMail(r.email, subject, body);
+  await store.createNotification({ signalId: sig.id, type: 'level_touch', minPlan: 'pro', title: subject, body, instrument: sig.instrument });
+}
+// Fired when a fresh bot-posted XAU signal is found for the first time
+// this poll cycle — see checkForNewBotSignals below.
+async function alertBotSignal(sig) {
+  const subject = `Professional XAU/USD call posted: ${sig.side}`;
+  const body = `Our professional trading team posted a new ${sig.side} setup on XAU/USD${sig.confidence != null ? ` (confidence ${sig.confidence}/100)` : ''}.\nEntry: ${sig.entry}\nStop loss: ${sig.sl}\n\nInformational only — conduct your own analysis before trading.`;
+  const recipients = await getAlertRecipients();
+  for (const r of recipients) sendMail(r.email, subject, body);
+  await store.createNotification({ signalId: sig.id, type: 'bot_signal', minPlan: 'pro', title: subject, body, instrument: 'XAUUSD' });
 }
 
 // ---- Track record: single-active-recommendation system. /api/insights
@@ -503,6 +512,20 @@ async function trackSignals() {
   for (const key of ENGINE_KEYS) {
     try { results[key] = await computeSignal(key); insightCache[key] = results[key]; } catch (e) { /* leave this cycle's cache entry as-is */ }
   }
+
+  // Notify Pro+ subscribers the instant the bot posts a fresh XAU call —
+  // detected purely by alerted_new=0, the same dedup flag the system's own
+  // alerts already use, so a redeploy or slow cycle can never double-send.
+  // This only ever READS the bot's row and flips that one bookkeeping flag
+  // — never touches side/entry/levels/status/outcome, which stay entirely
+  // the bot's to manage.
+  try {
+    const openBotSignals = (await store.getOpenSignals()).filter(s => s.source === 'bot' && !s.alerted_new);
+    for (const sig of openBotSignals) {
+      await alertBotSignal(sig);
+      await store.updateSignalOutcome(sig.id, { alerted_new: true });
+    }
+  } catch (e) { console.error('bot signal alert check failed', e.message); }
 
   // ---- Resolve (or invalidate) whatever is currently logged as open. At
   // most one system-sourced row is ever open by construction, but this loop
@@ -614,6 +637,28 @@ function computePerformanceStats(rows) {
     byInstrument[r.instrument][WIN_OUTCOMES.has(r.outcome) ? 'wins' : 'losses']++;
   }
   return { total: rows.length, open, wins, losses, invalidated, winRate, byInstrument };
+}
+
+// Win rate by day-of-week (Monday..Sunday, regardless of actual calendar
+// date — "historically, how do Wednesdays look") split by side, for the
+// Dashboard's two weekly trend charts. Includes every closed signal
+// regardless of source, so XAU's bot-resolved calls count alongside the
+// system's own.
+const WEEKDAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+function computeWeekdayWinRates(rows) {
+  const buckets = { BUY: WEEKDAY_LABELS.map(() => ({ wins: 0, losses: 0 })), SELL: WEEKDAY_LABELS.map(() => ({ wins: 0, losses: 0 })) };
+  for (const r of rows) {
+    if (r.status !== 'closed' || (!WIN_OUTCOMES.has(r.outcome) && r.outcome !== 'SL')) continue;
+    if (r.side !== 'BUY' && r.side !== 'SELL') continue;
+    const jsDay = new Date(r.created_at).getDay(); // 0=Sun..6=Sat
+    const mondayFirstIndex = (jsDay + 6) % 7; // 0=Mon..6=Sun
+    buckets[r.side][mondayFirstIndex][WIN_OUTCOMES.has(r.outcome) ? 'wins' : 'losses']++;
+  }
+  const toSeries = (side) => buckets[side].map((b, i) => ({
+    day: WEEKDAY_LABELS[i], wins: b.wins, losses: b.losses,
+    winRate: (b.wins + b.losses) ? Math.round((b.wins / (b.wins + b.losses)) * 1000) / 10 : null,
+  }));
+  return { buy: toSeries('BUY'), sell: toSeries('SELL') };
 }
 
 // ---- Routes ----
@@ -872,6 +917,37 @@ app.post('/api/favourites', async (req, res) => {
   res.json({ ok: true, favourites });
 });
 
+// Notifications — Pro+ (matches the alert-eligibility rule everything
+// here already uses): every "strong signal generated" event, whether the
+// system's own engine fired one or the professional bot posted an XAU
+// call, in one feed.
+app.get('/api/notifications', async (req, res) => {
+  const email = req.authEmail || String(req.query.email || '').trim().toLowerCase();
+  if (!email) return res.status(400).json({ error: 'email required' });
+  const sub = await store.getSubscriber(email);
+  const plan = planOf(sub);
+  if (!atLeast(plan, 'pro')) return res.status(402).json({ locked: true, message: 'Notifications are a Pro Trader Tools feature.' });
+  const notifications = await store.listNotifications(email, plan, 50);
+  res.json({ notifications });
+});
+
+app.post('/api/notifications/:id/read', async (req, res) => {
+  const email = req.authEmail || String(req.body?.email || '').trim().toLowerCase();
+  if (!email) return res.status(400).json({ error: 'email required' });
+  await store.markNotificationRead(email, Number(req.params.id));
+  res.json({ ok: true });
+});
+
+app.get('/api/notifications/unread-count', async (req, res) => {
+  const email = req.authEmail || String(req.query.email || '').trim().toLowerCase();
+  if (!email) return res.json({ count: 0 });
+  const sub = await store.getSubscriber(email);
+  const plan = planOf(sub);
+  if (!atLeast(plan, 'pro')) return res.json({ count: 0 });
+  const count = await store.countUnreadNotifications(email, plan);
+  res.json({ count });
+});
+
 // Track record — public, on purpose: showing losses alongside wins is what
 // makes the accuracy claim credible instead of marketing copy. BUT an
 // "open" row is a live, still-actionable setup — showing its instrument +
@@ -901,6 +977,22 @@ app.get('/api/performance', async (req, res) => {
       .sort((a, b) => (b.winRate ?? -1) - (a.winRate ?? -1));
   }
   res.json(payload);
+});
+
+// Dashboard landing page: top-6 win rate bar chart (includes XAU — the
+// bot's resolved calls count in byInstrument the same as everything else,
+// no special-casing needed) + the two weekly buy/sell trend lines. Public,
+// same "aggregate stats are the credibility number" precedent as
+// /api/performance's own stats — no per-market entry/SL/TP leaks here.
+app.get('/api/dashboard-stats', async (req, res) => {
+  const rows = await store.listSignals(1000);
+  const stats = computePerformanceStats(rows);
+  const topAssets = Object.entries(stats.byInstrument)
+    .map(([key, s]) => ({ key, label: LABELS[key] || key, ...s, winRate: (s.wins + s.losses) ? Math.round((s.wins / (s.wins + s.losses)) * 1000) / 10 : null }))
+    .sort((a, b) => (b.winRate ?? -1) - (a.winRate ?? -1))
+    .slice(0, 6);
+  const weekly = computeWeekdayWinRates(rows);
+  res.json({ stats, topAssets, weekly });
 });
 
 // Chart data for a single market: closes for everyone; EMA overlays +
@@ -1053,8 +1145,11 @@ async function checkExpiries() {
 }
 
 // ---- Startup ----
+// Deliberately terse — this never describes what's actually gated behind
+// ADMIN_KEY, on the off chance server logs are ever exposed somewhere they
+// shouldn't be.
 if (!DEMO_MODE && ADMIN_KEY === 'change-me-admin-key') {
-  console.warn('[SECURITY WARNING] ADMIN_KEY is still the default value while running against a real database. Set a real ADMIN_KEY env var before selling access — anyone can currently activate/deactivate subscribers and read admin stats.');
+  console.warn('[config] Set a real ADMIN_KEY env var.');
 }
 
 store.init()
