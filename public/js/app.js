@@ -292,6 +292,62 @@ async function refreshNotifBadge() {
 }
 setInterval(refreshNotifBadge, 60000);
 
+const TRACK_PAGE_SIZE = 25;
+let trackPage = 1;
+let trackRows = [];
+
+function trackRowHtml(r) {
+  if (r.locked) {
+    return `<tr>
+      <td>${new Date(r.created_at).toLocaleDateString()}</td>
+      <td colspan="4" class="note">🔒 Live setup — <a href="#/pricing">subscribe</a> to see which market and bias this is</td>
+      <td><span class="outcome-pill open">Open</span></td>
+      <td>—</td>
+    </tr>`;
+  }
+  const outcomeClass = r.status === 'open' ? 'open' : WIN_OUTCOMES.has(r.outcome) ? 'win' : r.outcome === 'SL' ? 'loss' : 'invalidated';
+  const outcomeText = r.status === 'open' ? 'Open' : (r.outcome === 'SL' ? 'SL' : WIN_OUTCOMES.has(r.outcome) ? `${r.outcome} (then gave back remainder)` : (r.outcome || '—'));
+  // Only the final level reached, not the whole TP1 → TP2 → TP3 chain — the
+  // full chain still lives in hit_history in the database (same shape the
+  // bot uses for XAU), this is a frontend display choice only.
+  const bestLevel = r.best_level || (r.hit_history || []).at(-1)?.level || '—';
+  return `<tr>
+    <td>${new Date(r.created_at).toLocaleDateString()}</td>
+    <td>${r.label || r.instrument}</td>
+    <td>${BIAS_LABEL[r.side] || r.side}</td>
+    <td>${r.strategy || '—'}</td>
+    <td>${r.confidence != null ? r.confidence + '/100' : '—'}</td>
+    <td><span class="outcome-pill ${outcomeClass}">${outcomeText}</span></td>
+    <td>${r.status === 'open' ? '—' : bestLevel}</td>
+  </tr>`;
+}
+
+function renderTrackPagination(totalPages) {
+  const host = document.getElementById('trackPagination');
+  if (totalPages <= 1) { host.innerHTML = ''; return; }
+  const btn = (label, page, opts = {}) => `<button class="page-btn ${opts.active ? 'active' : ''}" data-page="${page}" ${opts.disabled ? 'disabled' : ''}>${label}</button>`;
+  let html = btn('← Prev', trackPage - 1, { disabled: trackPage <= 1 });
+  for (let p = 1; p <= totalPages; p++) html += btn(String(p), p, { active: p === trackPage });
+  html += btn('Next →', trackPage + 1, { disabled: trackPage >= totalPages });
+  host.innerHTML = html;
+  host.querySelectorAll('[data-page]').forEach(b => b.addEventListener('click', () => {
+    const p = parseInt(b.dataset.page, 10);
+    if (p >= 1 && p <= totalPages) { trackPage = p; renderTrackTable(); }
+  }));
+}
+
+function renderTrackTable() {
+  const rowsHost = document.getElementById('trackRows');
+  const totalPages = Math.max(1, Math.ceil(trackRows.length / TRACK_PAGE_SIZE));
+  if (trackPage > totalPages) trackPage = totalPages;
+  const start = (trackPage - 1) * TRACK_PAGE_SIZE;
+  const pageRows = trackRows.slice(start, start + TRACK_PAGE_SIZE);
+  rowsHost.innerHTML = pageRows.length
+    ? pageRows.map(trackRowHtml).join('')
+    : `<tr><td colspan="7" class="note">No setups logged yet — check back once the engine has surfaced a few.</td></tr>`;
+  renderTrackPagination(totalPages);
+}
+
 async function loadTrackRecord() {
   const statsHost = document.getElementById('trackStats');
   const rowsHost = document.getElementById('trackRows');
@@ -307,41 +363,11 @@ async function loadTrackRecord() {
       <div class="stat-chip"><div class="n">${s.losses}</div><div class="l">Stopped out</div></div>
       <div class="stat-chip"><div class="n">${s.open}</div><div class="l">Still open</div></div>
     `;
-    // Best-performing markets lives on the Dashboard chart only now — Track
-    // Record stays a straight win/loss ledger, per feedback.
-    if (!data.recent.length) {
-      rowsHost.innerHTML = `<tr><td colspan="8" class="note">No setups logged yet — check back once the engine has surfaced a few.</td></tr>`;
-      return;
-    }
-    rowsHost.innerHTML = data.recent.map(r => {
-      if (r.locked) {
-        return `<tr>
-          <td>${new Date(r.created_at).toLocaleDateString()}</td>
-          <td colspan="4" class="note">🔒 Live setup — <a href="#/pricing">subscribe</a> to see which market and bias this is</td>
-          <td><span class="outcome-pill open">Open</span></td>
-          <td>—</td>
-          <td>—</td>
-        </tr>`;
-      }
-      const outcomeClass = r.status === 'open' ? 'open' : WIN_OUTCOMES.has(r.outcome) ? 'win' : r.outcome === 'SL' ? 'loss' : 'invalidated';
-      const outcomeText = r.status === 'open' ? 'Open' : (r.outcome === 'SL' ? 'SL' : WIN_OUTCOMES.has(r.outcome) ? `${r.outcome} (then gave back remainder)` : (r.outcome || '—'));
-      // Trail of TPs actually touched (walked from real candle history), not
-      // just the final best level — e.g. "TP1 → TP2" shows partial progress
-      // even on a setup that hasn't reached TP4 yet.
-      const trail = (r.hit_history || []).map(h => h.level).join(' → ') || r.best_level || '—';
-      return `<tr>
-        <td>${new Date(r.created_at).toLocaleDateString()}</td>
-        <td>${r.label || r.instrument}</td>
-        <td>${BIAS_LABEL[r.side] || r.side}</td>
-        <td>${r.strategy || '—'}</td>
-        <td>${r.confidence != null ? r.confidence + '/100' : '—'}</td>
-        <td><span class="outcome-pill ${outcomeClass}">${outcomeText}</span></td>
-        <td>${trail}</td>
-        <td>${formatDuration(r.resolved_in_ms)}</td>
-      </tr>`;
-    }).join('');
+    trackRows = data.recent || [];
+    trackPage = 1;
+    renderTrackTable();
   } catch (e) {
-    rowsHost.innerHTML = `<tr><td colspan="8" class="note">Failed to load track record.</td></tr>`;
+    rowsHost.innerHTML = `<tr><td colspan="7" class="note">Failed to load track record.</td></tr>`;
   }
 }
 
@@ -1414,22 +1440,8 @@ function renderInsights(data) {
     </div>
   `;
 
-  // Every currently-open system pick is tracked in parallel on the
-  // database/Track Record — a new best read gets posted and tracked the
-  // moment it appears, without waiting for an older pick to resolve first.
-  const trackedBox = document.getElementById('trackedBox');
-  if (trackedBox) {
-    const list = data.trackedAll || (data.tracked ? [data.tracked] : []);
-    if (!list.length) {
-      trackedBox.innerHTML = '';
-    } else {
-      trackedBox.innerHTML = list.map((t, i) => {
-        const since = new Date(t.trackedSince).toLocaleString();
-        const tag = i === 0 ? '📌 Currently tracked' : '📌 Also tracked (still resolving)';
-        return `<div class="note" style="margin-top:${i === 0 ? 10 : 4}px;">${tag}: <strong>${t.label} — ${BIAS_LABEL[t.side]}</strong> (${t.confidence}/100), since ${since}.</div>`;
-      }).join('');
-    }
-  }
+  // The list of everything currently tracked lived here — removed per
+  // feedback, since Track Record already shows every open pick.
 
   document.getElementById('filterBox').style.display = data.proTools ? 'block' : 'none';
   if (data.proTools) {

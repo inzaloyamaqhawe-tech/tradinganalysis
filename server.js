@@ -919,20 +919,8 @@ app.get('/api/insights', async (req, res) => {
     ? actionable.reduce((best, s) => (s.confidence > best.confidence ? s : best))
     : null);
 
-  // Every currently-open system pick is tracked in parallel — a new best
-  // read gets posted the moment it appears, without waiting for an older,
-  // still-unresolved pick to close first. Newest first, so the current
-  // best is what a user sees up top.
-  const openSystem = (await store.getOpenSignals()).filter(s => s.source !== 'bot')
-    .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-  const trackedList = openSystem.map(t => ({
-    instrument: t.instrument, label: LABELS[t.instrument], side: t.side, confidence: t.confidence, trackedSince: t.created_at,
-  }));
-
   const payload = {
     locked: false, plan, expiresAt: sub.expires_at, signals, topPick, proTools, elite,
-    tracked: trackedList[0] || null,
-    trackedAll: trackedList,
   };
 
   if (proTools) {
@@ -1053,7 +1041,7 @@ app.get('/api/performance', async (req, res) => {
   // stop) — an invalidated row isn't a result worth showing individually,
   // just noise. Now rare going forward: trackSignals() no longer aborts a
   // posted pick just because the engine's read moved on.
-  const recent = rows.filter(r => r.outcome !== 'INVALIDATED').slice(0, 50).map(r => {
+  const recent = rows.filter(r => r.outcome !== 'INVALIDATED').slice(0, 500).map(r => {
     if (r.status === 'open' && !premium) {
       return { id: r.id, status: 'open', locked: true, created_at: r.created_at };
     }
