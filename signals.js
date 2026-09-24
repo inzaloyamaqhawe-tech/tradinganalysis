@@ -81,7 +81,11 @@ function signalCrt(closed, atrNow) {
   const sweptHigh = c2.high > c1.high;
   const sweptLow = c2.low < c1.low;
   if (!closeInside || (sweptHigh && sweptLow) || (!sweptHigh && !sweptLow)) return null;
-  return { side: sweptHigh ? 'SELL' : 'BUY' };
+  // The stop belongs just beyond the wick that actually did the sweeping —
+  // that wick IS the liquidity level this setup is betting won't be
+  // revisited, so it's the real invalidation point, not an arbitrary ATR
+  // distance from the close.
+  return { side: sweptHigh ? 'SELL' : 'BUY', structureLevel: sweptHigh ? c2.high : c2.low };
 }
 
 // Trend-pullback continuation: latest candle closes decisively back in the
@@ -92,8 +96,12 @@ function signalTrend(closed, atrNow, regime) {
   const lastRange = Math.max(1e-9, last.high - last.low);
   const bodyPct = Math.abs(last.close - last.open) / lastRange;
   if (bodyPct < 0.5) return null;
-  if (regime === 'TRENDING_UP' && last.close > prev.high && last.close > last.open) return { side: 'BUY' };
-  if (regime === 'TRENDING_DOWN' && last.close < prev.low && last.close < last.open) return { side: 'SELL' };
+  if (regime === 'TRENDING_UP' && last.close > prev.high && last.close > last.open) {
+    return { side: 'BUY', structureLevel: Math.min(prev.low, last.low) };
+  }
+  if (regime === 'TRENDING_DOWN' && last.close < prev.low && last.close < last.open) {
+    return { side: 'SELL', structureLevel: Math.max(prev.high, last.high) };
+  }
   return null;
 }
 
@@ -106,7 +114,8 @@ function signalBreakout(closed, atrNow, atrBaseline) {
   if (lastRange < 1.5 * atrBaseline) return null;
   const bodyPct = Math.abs(last.close - last.open) / Math.max(1e-9, lastRange);
   if (bodyPct < 0.6) return null;
-  return { side: last.close > last.open ? 'BUY' : 'SELL' };
+  const side = last.close > last.open ? 'BUY' : 'SELL';
+  return { side, structureLevel: side === 'BUY' ? last.low : last.high };
 }
 
 // Range mean-reversion: price wicks beyond the recent range extreme and
@@ -121,11 +130,11 @@ function signalMeanReversion(closed, atrNow, bandBars = MEAN_REVERSION_BAND_BARS
 
   if (last.high > bandHigh) {
     const upperWickPct = (last.high - Math.max(last.open, last.close)) / lastRange;
-    if (last.close < bandHigh && upperWickPct >= 0.5) return { side: 'SELL' };
+    if (last.close < bandHigh && upperWickPct >= 0.5) return { side: 'SELL', structureLevel: last.high };
   }
   if (last.low < bandLow) {
     const lowerWickPct = (Math.min(last.open, last.close) - last.low) / lastRange;
-    if (last.close > bandLow && lowerWickPct >= 0.5) return { side: 'BUY' };
+    if (last.close > bandLow && lowerWickPct >= 0.5) return { side: 'BUY', structureLevel: last.low };
   }
   return null;
 }
@@ -263,9 +272,23 @@ function round(price) {
 // distance (25/50/75%) since that distance no longer relates cleanly to R.
 // The reported risk:reward is whatever ratio that target actually works out
 // to, not a forced 1:2.
-function computeLevels(entry, side, atrNow, strategy, explicitTarget) {
+// `structureLevel`, when given, is the real support/resistance/order-block/
+// liquidity-sweep price this setup's own invalidation logically sits beyond
+// (a swept wick, a pullback low, a zone edge, a Donchian channel side) — not
+// a fixed pip/point count, which doesn't mean anything comparable across a
+// $0.07 DOGE move, a $4000 XAU move and a 0.0001 GBPUSD pip. The stop is
+// whichever is FARTHER from entry: that structural level (plus a small ATR
+// buffer, so a wick exactly retesting the line doesn't tag it) or the ATR
+// floor below — structure sets the real invalidation point, ATR only
+// stops a stop from sitting unrealistically close when structure is thin.
+const STRUCTURE_SL_BUFFER_ATR = 0.15;
+function computeLevels(entry, side, atrNow, strategy, explicitTarget, structureLevel) {
   const slMult = STRATEGY_SL_ATR[strategy] ?? 1.0;
-  const slDist = slMult * atrNow;
+  let slDist = slMult * atrNow;
+  if (structureLevel != null) {
+    const structureDist = Math.abs(entry - structureLevel) + STRUCTURE_SL_BUFFER_ATR * atrNow;
+    slDist = Math.max(slDist, structureDist);
+  }
   const dir = side === 'BUY' ? 1 : -1;
   const sl = round(entry - dir * slDist);
 
@@ -343,13 +366,21 @@ function runEngine(closed, smcCtx) {
   let strategy, signal, patternMeta;
   if (wyckoffResult) {
     strategy = 'WYCKOFF';
-    signal = { side: wyckoffResult.side };
+    // Spring (BUY) sweeps below the range low; UTAD (SELL) sweeps above the
+    // range high — that swept wick is the liquidity level the setup bets
+    // against, same as CRT.
+    signal = { side: wyckoffResult.side, structureLevel: wyckoffResult.side === 'BUY' ? wyckoffResult.sweepLow : wyckoffResult.sweepHigh };
   } else if (smcResult) {
     strategy = 'SMC';
-    signal = { side: smcResult.side };
+    // Stop beyond the far edge of the order block/FVG zone itself — the
+    // zone IS the level, not a generic ATR distance from wherever price
+    // happened to reclaim it.
+    signal = { side: smcResult.side, structureLevel: smcResult.side === 'BUY' ? smcResult.zoneLow : smcResult.zoneHigh };
   } else if (volResult) {
     strategy = 'VOLBRK';
-    signal = { side: volResult.side };
+    // Stop beyond the opposite side of the Donchian channel that just broke
+    // — back inside the range means the breakout failed.
+    signal = { side: volResult.side, structureLevel: volResult.side === 'BUY' ? volResult.channelLow : volResult.channelHigh };
   } else {
     ({ strategy, signal, patternMeta } = selectSignal(closed, regime, atrNow, atrBaseline, patterns));
   }
@@ -372,7 +403,7 @@ function runEngine(closed, smcCtx) {
   }
 
   const explicitTarget = strategy === 'PATTERN' ? patternMeta.target : null;
-  const levels = computeLevels(closed.at(-1).close, signal.side, atrNow, strategy, explicitTarget);
+  const levels = computeLevels(closed.at(-1).close, signal.side, atrNow, strategy, explicitTarget, signal.structureLevel);
   let confidence = strategy === 'PATTERN' ? 70
     : strategy === 'SMC' ? (smcResult.confluence ? 82 : 75)
     : strategy === 'WYCKOFF' ? 80
