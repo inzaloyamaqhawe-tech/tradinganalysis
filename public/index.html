@@ -35,7 +35,12 @@
       <button class="mainnav-item" data-view="risk">Risk Disclosure</button>
     </nav>
     <div class="topbar-cta">
-      <span class="status-pill" id="authPill" style="display:none;"></span>
+      <div class="user-menu" id="userMenu" style="display:none;">
+        <button class="status-pill" id="authPill"></button>
+        <div class="user-menu-dropdown" id="userMenuDropdown">
+          <button id="userMenuLogout">Log out</button>
+        </div>
+      </div>
       <span class="status-pill" id="demoPill" style="display:none;">DEMO MODE</span>
     </div>
   </div>

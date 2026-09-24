@@ -1081,13 +1081,15 @@ chartModal.addEventListener('click', (e) => { if (e.target === chartModal) { cha
 document.getElementById('chartPricingLink')?.addEventListener('click', () => { chartModal.classList.remove('open'); disconnectChartLive(); });
 
 // ---------- Auth: one account, used everywhere instead of retyping email ----------
+// Deliberately NOT persisted anywhere (no localStorage/sessionStorage) —
+// per feedback, a page refresh must require logging in again, not silently
+// stay signed in.
 let authToken = null;
-try { authToken = localStorage.getItem('ta_token'); } catch (e) {}
 let currentUser = null; // { email, status, expiresAt, active }
 
 function authHeaders() { return authToken ? { Authorization: `Bearer ${authToken}` } : {}; }
-function setToken(token) { authToken = token; try { localStorage.setItem('ta_token', token); } catch (e) {} }
-function clearToken() { authToken = null; currentUser = null; try { localStorage.removeItem('ta_token'); } catch (e) {} }
+function setToken(token) { authToken = token; }
+function clearToken() { authToken = null; currentUser = null; }
 
 async function refreshMe() {
   if (!authToken) { currentUser = null; updateAuthUI(); return; }
@@ -1103,7 +1105,8 @@ function updateAuthUI() {
   const loggedIn = !!currentUser;
   document.getElementById('authLoggedOut').style.display = loggedIn ? 'none' : 'block';
   document.getElementById('authLoggedIn').style.display = loggedIn ? 'block' : 'none';
-  document.getElementById('authPill').style.display = loggedIn ? 'inline-block' : 'none';
+  document.getElementById('userMenu').style.display = loggedIn ? 'inline-block' : 'none';
+  if (!loggedIn) document.getElementById('userMenuDropdown').classList.remove('open');
   document.getElementById('acctLoggedInBox').style.display = loggedIn ? 'block' : 'none';
   document.getElementById('acctLoggedOutBox').style.display = loggedIn ? 'none' : 'block';
 
@@ -1186,6 +1189,14 @@ async function logout() {
 }
 document.getElementById('logoutBtn').addEventListener('click', logout);
 document.getElementById('acctLogoutBtn').addEventListener('click', logout);
+document.getElementById('userMenuLogout').addEventListener('click', logout);
+
+document.getElementById('authPill').addEventListener('click', (e) => {
+  e.stopPropagation();
+  document.getElementById('userMenuDropdown').classList.toggle('open');
+});
+document.addEventListener('click', () => document.getElementById('userMenuDropdown').classList.remove('open'));
+document.getElementById('userMenuDropdown').addEventListener('click', (e) => e.stopPropagation());
 document.getElementById('goInsightsFromHero').addEventListener('click', () => showView('insights'));
 document.getElementById('acctPricingBtn').addEventListener('click', () => showView('pricing'));
 document.getElementById('acctGoHeroBtn').addEventListener('click', () => showView('markets'));

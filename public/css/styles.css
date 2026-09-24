@@ -65,6 +65,23 @@ img { max-width: 100%; }
   font-size: .72rem; padding: 4px 10px; border-radius: 999px; font-weight: 700; letter-spacing: .02em;
   border: 1px solid rgba(242,184,75,.4); color: var(--gold); background: rgba(242,184,75,.08);
 }
+button.status-pill { cursor: pointer; font-family: inherit; }
+
+/* Click-toggled (not hover-toggled) so moving the mouse from the pill down
+   to "Log out" can never make it vanish mid-move — a hover dropdown with a
+   gap between trigger and menu is a classic way for that to happen. */
+.user-menu { position: relative; }
+.user-menu-dropdown {
+  display: none; position: absolute; top: calc(100% + 6px); right: 0; z-index: 50;
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px;
+  padding: 6px; min-width: 130px; box-shadow: 0 10px 30px rgba(0,0,0,.35);
+}
+.user-menu-dropdown.open { display: block; }
+.user-menu-dropdown button {
+  width: 100%; text-align: left; background: none; border: none; color: var(--text);
+  padding: 8px 10px; border-radius: 6px; font-size: .85rem; cursor: pointer; font-family: inherit;
+}
+.user-menu-dropdown button:hover { background: rgba(255,93,108,.12); color: var(--down); }
 
 /* ---------- Layout ---------- */
 .shell { max-width: var(--shell-max); margin: 0 auto; padding: 28px 20px 64px; }
