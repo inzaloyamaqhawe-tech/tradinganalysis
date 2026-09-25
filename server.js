@@ -509,7 +509,14 @@ async function alertLevelTouch(sig, newLevels) {
 // this poll cycle — see checkForNewBotSignals below.
 async function alertBotSignal(sig) {
   const subject = `Professional XAU/USD call posted: ${sig.side}`;
-  const body = `Our professional trading team posted a new ${sig.side} setup on XAU/USD${sig.confidence != null ? ` (confidence ${sig.confidence}/100)` : ''}.\nEntry: ${sig.entry}\nStop loss: ${sig.sl}\n\nInformational only — conduct your own analysis before trading.`;
+  // Same targets shown on the Insights page (getXauInsight) — the bot only
+  // ever fills in as many TPs as it has (tp3/tp4 are often null), so this
+  // only lists whichever ones actually have a value.
+  const targets = [sig.tp1, sig.tp2, sig.tp3, sig.tp4]
+    .map((tp, i) => (tp != null ? `TP${i + 1}: ${tp}` : null))
+    .filter(Boolean)
+    .join(', ');
+  const body = `Our professional trading team posted a new ${sig.side} setup on XAU/USD${sig.confidence != null ? ` (confidence ${sig.confidence}/100)` : ''}.\nEntry: ${sig.entry}\nStop loss: ${sig.sl}${targets ? `\nTargets: ${targets}` : ''}\n\nInformational only — conduct your own analysis before trading.`;
   const recipients = await getAlertRecipients();
   for (const r of recipients) sendMail(r.email, subject, body);
   await store.createNotification({ signalId: sig.id, type: 'bot_signal', minPlan: 'pro', title: subject, body, instrument: 'XAUUSD' });
