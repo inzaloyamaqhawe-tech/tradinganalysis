@@ -309,8 +309,14 @@ function trackRowHtml(r) {
   const outcomeText = r.status === 'open' ? 'Open' : (r.outcome === 'SL' ? 'SL' : WIN_OUTCOMES.has(r.outcome) ? `${r.outcome} (then gave back remainder)` : (r.outcome || '—'));
   // Only the final level reached, not the whole TP1 → TP2 → TP3 chain — the
   // full chain still lives in hit_history in the database (same shape the
-  // bot uses for XAU), this is a frontend display choice only.
-  const bestLevel = r.best_level || (r.hit_history || []).at(-1)?.level || '—';
+  // bot uses for XAU), this is a frontend display choice only. Shown
+  // regardless of open/closed — a still-open BTC setup that already
+  // touched TP1 must show "TP1" here, not "—" just because it hasn't
+  // fully closed yet. The bot doesn't maintain best_level/hit_history at
+  // all (see sql/BOT_INSTRUCTIONS.md — it only writes a final outcome), so
+  // a bot row falls back to its outcome directly when that's a real TP.
+  const bestLevel = r.best_level || (r.hit_history || []).at(-1)?.level
+    || (WIN_OUTCOMES.has(r.outcome) ? r.outcome : null) || '—';
   return `<tr>
     <td>${new Date(r.created_at).toLocaleDateString()}</td>
     <td>${r.label || r.instrument}</td>
@@ -318,7 +324,7 @@ function trackRowHtml(r) {
     <td>${r.strategy || '—'}</td>
     <td>${r.confidence != null ? r.confidence + '/100' : '—'}</td>
     <td><span class="outcome-pill ${outcomeClass}">${outcomeText}</span></td>
-    <td>${r.status === 'open' ? '—' : bestLevel}</td>
+    <td>${bestLevel}</td>
   </tr>`;
 }
 
