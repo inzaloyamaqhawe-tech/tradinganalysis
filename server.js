@@ -568,17 +568,35 @@ async function trackSignals() {
     try { results[key] = await computeSignal(key); insightCache[key] = results[key]; } catch (e) { /* leave this cycle's cache entry as-is */ }
   }
 
-  // Notify Pro+ subscribers the instant the bot posts a fresh XAU call —
-  // detected purely by alerted_new=0, the same dedup flag the system's own
-  // alerts already use, so a redeploy or slow cycle can never double-send.
-  // This only ever READS the bot's row and flips that one bookkeeping flag
-  // — never touches side/entry/levels/status/outcome, which stay entirely
-  // the bot's to manage.
+  // Notify Pro+ subscribers the instant the bot posts a fresh XAU call, and
+  // again the instant the bot closes one (per sql/BOT_INSTRUCTIONS.md, the
+  // bot does a single UPDATE straight to status='closed' + outcome — it
+  // doesn't maintain an incremental hit_history the way our own engine
+  // does, so there's one "new" alert and one "closed" alert per bot call,
+  // not a running TP1/TP2/TP3 trail). Both are detected purely by
+  // bookkeeping flags (alerted_new, and 'CLOSED' in alerted_levels) so a
+  // redeploy or slow cycle can never double-send. This only ever READS the
+  // bot's rows and flips those two bookkeeping fields — never touches
+  // side/entry/levels/status/outcome, which stay entirely the bot's to
+  // manage. Checks recent rows, not just open ones, so the closing alert
+  // still fires even if the bot closed a signal between poll cycles.
   try {
-    const openBotSignals = (await store.getOpenSignals()).filter(s => s.source === 'bot' && !s.alerted_new);
-    for (const sig of openBotSignals) {
-      await alertBotSignal(sig);
-      await store.updateSignalOutcome(sig.id, { alerted_new: true });
+    const recentBotSignals = (await store.listSignals(50)).filter(s => s.source === 'bot');
+    for (const sig of recentBotSignals) {
+      if (!sig.alerted_new) {
+        await alertBotSignal(sig);
+        await store.updateSignalOutcome(sig.id, { alerted_new: true });
+      }
+      const alertedLevels = new Set(sig.alerted_levels || []);
+      // INVALIDATED isn't a real outcome this platform recognizes anywhere
+      // else (Track Record already filters it out entirely) — only a real
+      // TP1-4 or SL close is notification-worthy.
+      if (sig.status === 'closed' && sig.outcome && sig.outcome !== 'INVALIDATED' && !alertedLevels.has('CLOSED')) {
+        await alertLevelTouch(sig, [sig.outcome]);
+      }
+      if (sig.status === 'closed' && !alertedLevels.has('CLOSED')) {
+        await store.updateSignalOutcome(sig.id, { alerted_levels: [...alertedLevels, 'CLOSED'] });
+      }
     }
   } catch (e) { console.error('bot signal alert check failed', e.message); }
 
@@ -666,7 +684,6 @@ function computePerformanceStats(rows) {
   const closed = rows.filter(r => r.status === 'closed');
   const wins = closed.filter(r => WIN_OUTCOMES.has(r.outcome)).length;
   const losses = closed.filter(r => r.outcome === 'SL').length;
-  const invalidated = closed.filter(r => r.outcome === 'INVALIDATED').length;
   const open = rows.filter(r => r.status === 'open').length;
   const decided = wins + losses;
   const winRate = decided ? Math.round((wins / decided) * 1000) / 10 : null;
@@ -677,7 +694,7 @@ function computePerformanceStats(rows) {
     byInstrument[r.instrument] = byInstrument[r.instrument] || { wins: 0, losses: 0 };
     byInstrument[r.instrument][WIN_OUTCOMES.has(r.outcome) ? 'wins' : 'losses']++;
   }
-  return { total: rows.length, open, wins, losses, invalidated, winRate, byInstrument };
+  return { total: rows.length, open, wins, losses, winRate, byInstrument };
 }
 
 // Win rate by day-of-week (Monday..Sunday, regardless of actual calendar
@@ -1015,12 +1032,8 @@ app.get('/api/performance', async (req, res) => {
   const proTools = atLeast(plan, 'pro');
 
   const rows = await store.listSignals(500);
-  const stats = computePerformanceStats(rows); // aggregate stats computed on the full history, invalidated included
-  // The displayed list only ever shows real outcomes (a target hit or the
-  // stop) — an invalidated row isn't a result worth showing individually,
-  // just noise. Now rare going forward: trackSignals() no longer aborts a
-  // posted pick just because the engine's read moved on.
-  const recent = rows.filter(r => r.outcome !== 'INVALIDATED').slice(0, 500).map(r => {
+  const stats = computePerformanceStats(rows);
+  const recent = rows.slice(0, 500).map(r => {
     if (r.status === 'open' && !premium) {
       return { id: r.id, status: 'open', locked: true, created_at: r.created_at };
     }

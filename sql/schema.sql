@@ -71,13 +71,13 @@ CREATE TABLE IF NOT EXISTS signals (
   confidence      TINYINT UNSIGNED NULL,
   status          ENUM('open','closed') NOT NULL DEFAULT 'open',
   -- The win/loss column you asked for: which target was reached, or SL
-  -- (stopped out with none reached), or INVALIDATED (structure changed
-  -- before either happened). NULL while still open. "LOST" in plain
-  -- English maps to the 'SL' value here — kept as SL rather than a
-  -- separate "LOST" enum value so this matches the same vocabulary the
-  -- system side of the app already uses everywhere else (API responses,
-  -- the Track Record page, this file's own outcome logic).
-  outcome         ENUM('TP1','TP2','TP3','TP4','SL','INVALIDATED') NULL,
+  -- (stopped out with none reached). NULL while still open. There is no
+  -- "invalidated" outcome — every posted call resolves to a real result.
+  -- "LOST" in plain English maps to the 'SL' value here — kept as SL
+  -- rather than a separate "LOST" enum value so this matches the same
+  -- vocabulary the system side of the app already uses everywhere else
+  -- (API responses, the Track Record page, this file's own outcome logic).
+  outcome         ENUM('TP1','TP2','TP3','TP4','SL') NULL,
   best_level      VARCHAR(4) NULL,
   hit_history     JSON NULL,
   posted_by       VARCHAR(80) NULL,   -- bot rows only: which professional/channel this came from (optional, informational)

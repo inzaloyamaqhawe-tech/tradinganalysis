@@ -64,12 +64,11 @@ WHERE id = 123;
 ```
 Use `'SL'` for a straightforward loss. (In the app's own UI this is shown to users as the trade having lost — "SL" is just the internal value.)
 
-**If the professional themselves cancelled/invalidated the call before it hit anything:**
-```sql
-UPDATE signals
-SET status = 'closed', outcome = 'INVALIDATED', closed_at = NOW()
-WHERE id = 123;
-```
+**There is no "invalidated" outcome — don't use it.** Every posted call gets
+resolved to a real result: `'TP1'`-`'TP4'` (a target was reached) or `'SL'`
+(it wasn't). If a call needs to be pulled before it resolves for any reason,
+that's a judgment call on your side, not something this app's Track Record
+represents — never write `outcome = 'INVALIDATED'` or any other value.
 
 That's the entire contract — one INSERT to post, one UPDATE to resolve. The
 app polls this table on its own; you never need to tell it anything beyond
@@ -78,10 +77,9 @@ keeping these rows accurate.
 ## 3. A couple of things NOT to do
 
 - Never post more than one **open** XAU row at a time. If a new professional
-  call comes in while a previous one is still open, either wait for the
-  current one to resolve, or update/close the stale one first (e.g. as
-  `INVALIDATED`) before inserting the new one. Two simultaneously-open XAU
-  rows will confuse which one the app treats as "the" current pick.
+  call comes in while a previous one is still open, wait for the current one
+  to resolve to a real `TP1`-`TP4`/`SL` outcome first — two simultaneously-open
+  XAU rows will confuse which one the app treats as "the" current pick.
 - Never edit `entry`, `sl`, or `tp1`-`tp4` after the initial insert — only
   `status`, `outcome`, and `closed_at` change on the update.
 - Timestamps are UTC, not SAST (South Africa is UTC+2) — make sure whatever
