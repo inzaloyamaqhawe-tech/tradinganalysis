@@ -541,6 +541,12 @@ async function alertBotSignal(sig) {
 // with whatever's still open — a user logging in right now must see the
 // current best being tracked without waiting on an older, unresolved pick
 // to close first. Multiple system signals can be open at once by design.
+//
+// Only a setup at or above this confidence bar ever gets written to the
+// database/Track Record — a 89.9%-confidence "best available" read still
+// shows live on the Insights page, it just isn't official/tracked. Strict
+// >=, so nothing below a clean 90 slips through.
+const MIN_CONFIDENCE_TO_POST = 90;
 async function postNewSystemSignal(key, result) {
   const row = await store.logSignal({
     source: 'system',
@@ -615,12 +621,16 @@ async function trackSignals() {
   // ---- Decide whether to post a new recommendation. The current best read
   // gets tracked immediately if it isn't already an open pick — no waiting
   // period. Whatever else is already open just keeps resolving in parallel
-  // via the loop above, untouched. ----
+  // via the loop above, untouched. Only ever posted to the database/Track
+  // Record if it clears MIN_CONFIDENCE_TO_POST — everything below that bar
+  // still shows on the Insights page as a live read, it just never gets
+  // written to the DB or tracked as an official pick.
   const actionable = ENGINE_KEYS
     .map(key => ({ key, result: results[key] }))
     .filter(({ result }) => result && result.signal !== 'HOLD' && result.levels && result.confidence != null);
   if (!actionable.length) return;
   const best = actionable.reduce((a, b) => (b.result.confidence > a.result.confidence ? b : a));
+  if (best.result.confidence < MIN_CONFIDENCE_TO_POST) return;
 
   const stillOpen = (await store.getOpenSignals()).filter(s => s.source !== 'bot');
   const alreadyOpen = stillOpen.some(s => s.instrument === best.key);
