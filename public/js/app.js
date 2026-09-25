@@ -565,15 +565,9 @@ setInterval(loadPrices, 30000);
 // the 30s poll above (Twelve Data via our own server, untouched) — Binance
 // has no FX/gold market at all.
 const BINANCE_SYMBOL = {
-  BTC_USDT: 'btcusdt', ETH_USDT: 'ethusdt', SOL_USDT: 'solusdt', XRP_USDT: 'xrpusdt', ARB_USDT: 'arbusdt',
-  DOGE_USDT: 'dogeusdt', ADA_USDT: 'adausdt', BCH_USDT: 'bchusdt', AAVE_USDT: 'aaveusdt', LTC_USDT: 'ltcusdt',
-  NEAR_USDT: 'nearusdt', SUI_USDT: 'suiusdt', AVAX_USDT: 'avaxusdt', DOT_USDT: 'dotusdt', UNI_USDT: 'uniusdt',
-  LINK_USDT: 'linkusdt', TRUMP_USDT: 'trumpusdt', SHIB_USDT: 'shibusdt', HBAR_USDT: 'hbarusdt', FIL_USDT: 'filusdt',
-  PAXG_USDT: 'paxgusdt', PEPE_USDT: 'pepeusdt', PYTH_USDT: 'pythusdt', XLM_USDT: 'xlmusdt', PUMP_USDT: 'pumpusdt',
-  WLD_USDT: 'wldusdt', QNT_USDT: 'qntusdt', FET_USDT: 'fetusdt', VIRTUAL_USDT: 'virtualusdt', BONK_USDT: 'bonkusdt',
-  INJ_USDT: 'injusdt', OP_USDT: 'opusdt', SEI_USDT: 'seiusdt', WIF_USDT: 'wifusdt', ATOM_USDT: 'atomusdt',
-  LDO_USDT: 'ldousdt', PENGU_USDT: 'penguusdt', APT_USDT: 'aptusdt', ONDO_USDT: 'ondousdt', APE_USDT: 'apeusdt',
-  VET_USDT: 'vetusdt', ETC_USDT: 'etcusdt', CRV_USDT: 'crvusdt', XAUT_USDT: 'xautusdt', ENA_USDT: 'enausdt',
+  BTC_USDT: 'btcusdt', XLM_USDT: 'xlmusdt', ETH_USDT: 'ethusdt', SOL_USDT: 'solusdt', XRP_USDT: 'xrpusdt',
+  ADA_USDT: 'adausdt', DOGE_USDT: 'dogeusdt', LTC_USDT: 'ltcusdt', PAXG_USDT: 'paxgusdt', LINK_USDT: 'linkusdt',
+  AVAX_USDT: 'avaxusdt', ENA_USDT: 'enausdt',
 };
 const BINANCE_TO_KEY = Object.fromEntries(Object.entries(BINANCE_SYMBOL).map(([key, sym]) => [sym.toUpperCase(), key]));
 
