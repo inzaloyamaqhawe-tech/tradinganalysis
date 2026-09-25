@@ -282,13 +282,24 @@ function round(price) {
 // floor below — structure sets the real invalidation point, ATR only
 // stops a stop from sitting unrealistically close when structure is thin.
 const STRUCTURE_SL_BUFFER_ATR = 0.15;
-function computeLevels(entry, side, atrNow, strategy, explicitTarget, structureLevel) {
+// A gold-tracking instrument's own price noise doesn't scale down with a
+// quiet ATR reading the way a normal crypto pair's does — real XAU's own
+// trading bot (BOTS/universal.py) enforces a hard-floor MIN_SL_USD for
+// exactly this reason: gold can sit "quiet" by ATR's measure while still
+// wicking $10-20 within a single 1h bar, so a pure ATR/structure stop can
+// land inside that ordinary noise and get tagged almost immediately. PAXG
+// tracks spot gold 1:1, so it inherits the same problem — this floor is
+// specifically why every PAXG setup so far has hit SL.
+const MIN_SL_USD_BY_INSTRUMENT = { PAXG_USDT: 10 };
+function computeLevels(entry, side, atrNow, strategy, explicitTarget, structureLevel, instrument) {
   const slMult = STRATEGY_SL_ATR[strategy] ?? 1.0;
   let slDist = slMult * atrNow;
   if (structureLevel != null) {
     const structureDist = Math.abs(entry - structureLevel) + STRUCTURE_SL_BUFFER_ATR * atrNow;
     slDist = Math.max(slDist, structureDist);
   }
+  const minFloor = MIN_SL_USD_BY_INSTRUMENT[instrument];
+  if (minFloor != null) slDist = Math.max(slDist, minFloor);
   const dir = side === 'BUY' ? 1 : -1;
   const sl = round(entry - dir * slDist);
 
@@ -333,7 +344,7 @@ function computeConfidence(strategy, regime, closed, atrNow, atrBaseline) {
 // It's optional and best-effort: without it (or wherever it doesn't
 // confirm), the engine falls straight back to the regime-based strategies
 // below, unchanged.
-function runEngine(closed, smcCtx) {
+function runEngine(closed, smcCtx, instrument) {
   const { regime, atrNow, atrBaseline } = classifyRegime(closed);
   if (regime === 'NO_DATA') {
     // Zones need far less history than the full regime engine (~14-20
@@ -403,7 +414,7 @@ function runEngine(closed, smcCtx) {
   }
 
   const explicitTarget = strategy === 'PATTERN' ? patternMeta.target : null;
-  const levels = computeLevels(closed.at(-1).close, signal.side, atrNow, strategy, explicitTarget, signal.structureLevel);
+  const levels = computeLevels(closed.at(-1).close, signal.side, atrNow, strategy, explicitTarget, signal.structureLevel, instrument);
   let confidence = strategy === 'PATTERN' ? 70
     : strategy === 'SMC' ? (smcResult.confluence ? 82 : 75)
     : strategy === 'WYCKOFF' ? 80

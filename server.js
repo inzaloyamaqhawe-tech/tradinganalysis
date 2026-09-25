@@ -58,6 +58,19 @@ if (HAS_MYSQL) {
     host: MYSQL_HOST, user: MYSQL_USER, password: MYSQL_PASS, database: MYSQL_NAME,
     waitForConnections: true, connectionLimit: 10, charset: 'utf8mb4_general_ci',
   });
+  // The Xneelo MySQL server's own system clock runs on SAST (UTC+2), not
+  // UTC — confirmed via NOW() vs UTC_TIMESTAMP() returning a 2-hour gap.
+  // Every column relying on MySQL's server-side DEFAULT CURRENT_TIMESTAMP
+  // (created_at, polled_at, etc.) was silently being stamped 2 hours ahead
+  // of the real UTC candle data everything else in this app uses — which
+  // meant signal resolution treated every candle in the first 2 real hours
+  // after a signal posted as "before entry" and skipped it entirely, then
+  // started evaluating 2 hours into blind drift. This is what was making
+  // setups across every instrument (not just one) look like they hit SL
+  // almost immediately. Setting the session's time_zone to UTC on every
+  // pooled connection makes CURRENT_TIMESTAMP/NOW() return true UTC from
+  // here on, with no need to touch every individual INSERT.
+  pool.on('connection', (connection) => { connection.query("SET time_zone = '+00:00'"); });
   store = createMysqlStorage(pool);
 } else if (DEMO_MODE) {
   console.log('[demo mode] no DB_HOST/DATABASE_URL set — using in-memory storage, no real payments required.');
@@ -367,7 +380,7 @@ async function computeSignal(instrument) {
       // SMC context is a bonus layer, never a hard dependency — the regime-based engine still works without it.
     }
   }
-  return runEngine(candles, smcCtx);
+  return runEngine(candles, smcCtx, instrument);
 }
 async function getCachedInsight(instrument) {
   if (instrument === 'XAUUSD') return getXauInsight();
