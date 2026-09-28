@@ -18,6 +18,24 @@
 </head>
 <body>
 
+<!-- Auth gate: the rest of the app renders and loads normally underneath
+     (blurred, non-interactive) so this is a fast visual gate, not a
+     separate loading state — toggled by body.gated in app.js. -->
+<div class="gate-overlay" id="authGate">
+  <div class="panel hero-auth gate-card">
+    <h3 class="section-title" style="margin-top:0; font-size:1.05rem;">Log in</h3>
+    <p class="note" style="margin-top:0;">Log in or register to see live markets, insights, and track record.</p>
+    <div class="row" style="margin-top:8px;"><input type="text" id="gateAuthEmail" placeholder="Username or email" autocomplete="off" autocapitalize="off" spellcheck="false" /></div>
+    <div class="row password-row" style="margin-top:8px;">
+      <input type="password" id="gateAuthPassword" placeholder="Password" autocomplete="off" />
+      <button type="button" class="ghost pw-toggle" data-target="gateAuthPassword">Show</button>
+    </div>
+    <div class="row" style="margin-top:10px;"><button id="gateAuthSubmitBtn">Log in</button></div>
+    <div id="gateAuthMsg" class="note"></div>
+    <p class="note" style="margin-top:14px; text-align:center;">No account? <a href="#" id="gateOpenRegisterLink">Register here</a></p>
+  </div>
+</div>
+
 <header class="topbar">
   <div class="topbar-inner">
     <a class="brand" href="#/dashboard">

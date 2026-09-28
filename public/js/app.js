@@ -1189,6 +1189,8 @@ async function refreshMe() {
 
 function updateAuthUI() {
   const loggedIn = !!currentUser;
+  document.body.classList.toggle('gated', !loggedIn);
+  if (!loggedIn) document.getElementById('gateAuthMsg').textContent = '';
   document.getElementById('authLoggedOut').style.display = loggedIn ? 'none' : 'block';
   document.getElementById('authLoggedIn').style.display = loggedIn ? 'block' : 'none';
   document.getElementById('userMenu').style.display = loggedIn ? 'inline-block' : 'none';
@@ -1265,8 +1267,9 @@ async function doLogin(emailId, passwordId, msgId) {
 }
 document.getElementById('authSubmitBtn').addEventListener('click', () => doLogin('authEmail', 'authPassword', 'authMsg'));
 document.getElementById('acctAuthSubmitBtn').addEventListener('click', () => doLogin('acctAuthEmail', 'acctAuthPassword', 'acctAuthMsg'));
+document.getElementById('gateAuthSubmitBtn').addEventListener('click', () => doLogin('gateAuthEmail', 'gateAuthPassword', 'gateAuthMsg'));
 
-// ---------- Register (a popup modal off either "No account? Register here" link) ----------
+// ---------- Register (a popup modal off any "No account? Register here" link) ----------
 const registerModal = document.getElementById('registerModal');
 function openRegisterModal(e) {
   e.preventDefault();
@@ -1275,6 +1278,7 @@ function openRegisterModal(e) {
 }
 document.getElementById('openRegisterLink').addEventListener('click', openRegisterModal);
 document.getElementById('acctOpenRegisterLink').addEventListener('click', openRegisterModal);
+document.getElementById('gateOpenRegisterLink').addEventListener('click', openRegisterModal);
 document.getElementById('registerClose').addEventListener('click', () => registerModal.classList.remove('open'));
 registerModal.addEventListener('click', (e) => { if (e.target === registerModal) registerModal.classList.remove('open'); });
 

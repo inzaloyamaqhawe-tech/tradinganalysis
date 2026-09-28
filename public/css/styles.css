@@ -31,6 +31,24 @@ body {
 a { color: inherit; text-decoration: none; }
 img { max-width: 100%; }
 
+/* ---------- Auth gate ----------
+   The app underneath still boots and loads its data normally (prices,
+   engine, etc. keep polling) — it's just visually blurred and unclickable
+   until logged in, per feedback: not a blank/hidden state, a frosted-glass
+   gate with the login card floating on top of it. */
+body.gated .topbar, body.gated .shell {
+  filter: blur(10px);
+  pointer-events: none;
+  user-select: none;
+}
+.gate-overlay {
+  display: none; position: fixed; inset: 0; z-index: 90;
+  align-items: center; justify-content: center; padding: 20px;
+  background: rgba(4, 7, 12, .45);
+}
+body.gated .gate-overlay { display: flex; }
+.gate-card { width: 100%; max-width: 400px; margin: 0; }
+
 /* ---------- Topbar ---------- */
 .topbar {
   position: sticky; top: 0; z-index: 40;
