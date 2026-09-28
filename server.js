@@ -57,6 +57,18 @@ if (HAS_MYSQL) {
   const pool = mysql.createPool({
     host: MYSQL_HOST, user: MYSQL_USER, password: MYSQL_PASS, database: MYSQL_NAME,
     waitForConnections: true, connectionLimit: 10, charset: 'utf8mb4_general_ci',
+    // Without this, mysql2 converts every DATETIME/TIMESTAMP column using
+    // the NODE PROCESS's own local system timezone — not UTC — on both
+    // read and write. That's a second, independent source of the exact
+    // same corruption the SET time_zone fix below addresses server-side:
+    // it doesn't matter that the DB now stores true UTC if the driver
+    // then reinterprets those numbers as some other zone the moment
+    // JS reads them back into a Date object. 'Z' pins the driver itself
+    // to UTC regardless of whatever timezone the underlying OS happens
+    // to be set to (confirmed locally as Africa/Johannesburg — SAST,
+    // the same UTC+2 as the DB server bug, and NOT something to assume
+    // is different on Render just because it's a container).
+    timezone: 'Z',
   });
   // The Xneelo MySQL server's own system clock runs on SAST (UTC+2), not
   // UTC — confirmed via NOW() vs UTC_TIMESTAMP() returning a 2-hour gap.
