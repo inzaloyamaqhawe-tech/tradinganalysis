@@ -306,7 +306,7 @@ function trackRowHtml(r) {
     </tr>`;
   }
   const outcomeClass = r.status === 'open' ? 'open' : WIN_OUTCOMES.has(r.outcome) ? 'win' : r.outcome === 'SL' ? 'loss' : 'invalidated';
-  const outcomeText = r.status === 'open' ? 'Open' : (r.outcome === 'SL' ? 'SL' : WIN_OUTCOMES.has(r.outcome) ? `${r.outcome} (then gave back remainder)` : (r.outcome || '—'));
+  const outcomeText = r.status === 'open' ? 'Open' : (r.outcome === 'SL' ? 'SL' : WIN_OUTCOMES.has(r.outcome) ? r.outcome : (r.outcome || '—'));
   // Only the final level reached, not the whole TP1 → TP2 → TP3 chain — the
   // full chain still lives in hit_history in the database (same shape the
   // bot uses for XAU), this is a frontend display choice only. Shown
