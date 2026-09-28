@@ -160,6 +160,11 @@ function createMemoryStorage() {
       return false;
     },
 
+    async setUsername(email, username) {
+      const s = subscribers.get(email);
+      if (s) { s.username = username; scheduleSave(); }
+    },
+
     async getSubscriberByUsername(username) {
       for (const s of subscribers.values()) {
         if (s.username && s.username.toLowerCase() === username.toLowerCase()) return s;
@@ -382,6 +387,10 @@ function createPgStorage(pool) {
       return rows[0] || null;
     },
 
+    async setUsername(email, username) {
+      await pool.query(`UPDATE subscribers SET username = $2, updated_at = now() WHERE email = $1`, [email, username]);
+    },
+
     async setAdmin(email, plan, expiresAt) {
       await pool.query(
         `INSERT INTO subscribers (email, status, plan, expires_at, is_admin) VALUES ($1, 'active', $2, $3, true)
@@ -572,6 +581,10 @@ function createMysqlStorage(pool) {
     async getSubscriberByUsername(username) {
       const [rows] = await pool.execute(`SELECT * FROM users WHERE LOWER(username) = LOWER(?) LIMIT 1`, [username]);
       return mapUserRow(rows[0]);
+    },
+
+    async setUsername(email, username) {
+      await pool.execute(`UPDATE users SET username = ? WHERE email = ?`, [username, email]);
     },
 
     async setAdmin(email, plan, expiresAt) {

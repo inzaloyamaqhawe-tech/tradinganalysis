@@ -852,6 +852,32 @@ app.get('/api/auth/me', async (req, res) => {
   });
 });
 
+app.post('/api/account/username', async (req, res) => {
+  if (!req.authEmail) return res.status(401).json({ error: 'Not logged in.' });
+  const username = String(req.body?.username || '').trim();
+  if (!isValidUsername(username)) return res.status(400).json({ error: 'Username must be 3-20 characters, letters/numbers/underscore only.' });
+  if (await store.isUsernameTaken(username, req.authEmail)) return res.status(409).json({ error: 'That username is already taken.' });
+  await store.setUsername(req.authEmail, username);
+  res.json({ ok: true, username });
+});
+
+app.post('/api/account/password', async (req, res) => {
+  if (!req.authEmail) return res.status(401).json({ error: 'Not logged in.' });
+  const oldPassword = String(req.body?.oldPassword || '');
+  const newPassword = String(req.body?.newPassword || '');
+  const confirmPassword = String(req.body?.confirmPassword || '');
+  const sub = await store.getSubscriber(req.authEmail);
+  if (!sub?.password_hash || !verifyPassword(oldPassword, sub.password_hash)) {
+    return res.status(401).json({ error: 'Current password is incorrect.' });
+  }
+  if (newPassword.length < 6) return res.status(400).json({ error: 'New password must be at least 6 characters.' });
+  if (newPassword !== confirmPassword) return res.status(400).json({ error: 'New passwords do not match.' });
+  // No profile fields passed — setPassword COALESCEs, leaving
+  // username/first/last name exactly as they were.
+  await store.setPassword(req.authEmail, hashPassword(newPassword), {});
+  res.json({ ok: true });
+});
+
 app.get('/api/prices', (req, res) => {
   const assets = ALL_KEYS.map(key => ({
     key,

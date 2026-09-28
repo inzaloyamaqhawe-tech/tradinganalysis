@@ -1202,13 +1202,30 @@ function updateAuthUI() {
     const displayName = currentUser.username || currentUser.email;
     document.getElementById('authPill').textContent = displayName;
     document.getElementById('authWhoEmail').textContent = displayName;
-    const planLabel = PLANS?.[currentUser.plan]?.label || currentUser.plan;
+    const plan = PLANS?.[currentUser.plan];
+    const planLabel = plan?.label || currentUser.plan;
     document.getElementById('authStatusNote').textContent = currentUser.active
       ? `${planLabel} active — expires ${new Date(currentUser.expiresAt).toLocaleDateString()}.`
       : 'No active subscription yet — Free Market Watch.';
-    document.getElementById('acctEmailShown').textContent = displayName;
-    document.getElementById('acctStatus').textContent = currentUser.active ? `Active (${planLabel})` : (currentUser.status || 'pending');
+
+    document.getElementById('acctUsernameShown').textContent = currentUser.username || '—';
+    document.getElementById('acctEmailShown').textContent = currentUser.email;
+    const fullName = [currentUser.firstName, currentUser.lastName].filter(Boolean).join(' ');
+    document.getElementById('acctNameShown').textContent = fullName || '—';
+    document.getElementById('acctPlanShown').textContent = planLabel;
+    document.getElementById('acctStatus').textContent = currentUser.active ? 'Active' : (currentUser.status || 'pending');
     document.getElementById('acctExpires').textContent = currentUser.expiresAt ? new Date(currentUser.expiresAt).toLocaleDateString() : '—';
+    document.getElementById('acctBenefitsList').innerHTML = (plan?.features || []).map(f => `<li>${f}</li>`).join('');
+
+    const favHost = document.getElementById('acctFavouritesList');
+    if (currentFavourites.length) {
+      favHost.innerHTML = currentFavourites.map(key => {
+        const label = lastPricesData?.assets.find(a => a.key === key)?.label || key;
+        return `<div class="sp-row"><span>${label}</span></div>`;
+      }).join('');
+    } else {
+      favHost.innerHTML = '<div class="note">No favourites yet — star a market on Insights to add one.</div>';
+    }
 
     // No more retyping email on every screen — prefill + lock it in from the session.
     [subEmailInput, checkEmailInput].forEach(el => { el.value = currentUser.email; el.readOnly = true; });
@@ -1226,10 +1243,12 @@ document.querySelectorAll('.pw-toggle').forEach(btn => btn.addEventListener('cli
 }));
 
 // ---------- Login (the hero card, shown by default) ----------
-document.getElementById('authSubmitBtn').addEventListener('click', async () => {
-  const email = document.getElementById('authEmail').value.trim();
-  const password = document.getElementById('authPassword').value;
-  const msg = document.getElementById('authMsg');
+// Shared by the hero login card and the My Account login card — same
+// fields, same endpoint, just different element ids per instance.
+async function doLogin(emailId, passwordId, msgId) {
+  const email = document.getElementById(emailId).value.trim();
+  const password = document.getElementById(passwordId).value;
+  const msg = document.getElementById(msgId);
   if (!email || !password) { msg.textContent = 'Enter your username/email and password.'; return; }
   try {
     const res = await fetch('/api/auth/login', {
@@ -1243,15 +1262,19 @@ document.getElementById('authSubmitBtn').addEventListener('click', async () => {
   } catch (e) {
     msg.textContent = 'Network error — try again.';
   }
-});
+}
+document.getElementById('authSubmitBtn').addEventListener('click', () => doLogin('authEmail', 'authPassword', 'authMsg'));
+document.getElementById('acctAuthSubmitBtn').addEventListener('click', () => doLogin('acctAuthEmail', 'acctAuthPassword', 'acctAuthMsg'));
 
-// ---------- Register (a popup modal off the "No account? Register here" link) ----------
+// ---------- Register (a popup modal off either "No account? Register here" link) ----------
 const registerModal = document.getElementById('registerModal');
-document.getElementById('openRegisterLink').addEventListener('click', (e) => {
+function openRegisterModal(e) {
   e.preventDefault();
   document.getElementById('regMsg').textContent = '';
   registerModal.classList.add('open');
-});
+}
+document.getElementById('openRegisterLink').addEventListener('click', openRegisterModal);
+document.getElementById('acctOpenRegisterLink').addEventListener('click', openRegisterModal);
 document.getElementById('registerClose').addEventListener('click', () => registerModal.classList.remove('open'));
 registerModal.addEventListener('click', (e) => { if (e.target === registerModal) registerModal.classList.remove('open'); });
 
@@ -1299,9 +1322,48 @@ document.getElementById('authPill').addEventListener('click', (e) => {
 });
 document.addEventListener('click', () => document.getElementById('userMenuDropdown').classList.remove('open'));
 document.getElementById('userMenuDropdown').addEventListener('click', (e) => e.stopPropagation());
+
+// ---------- My Account: update username / change password ----------
+document.getElementById('acctSaveUsernameBtn').addEventListener('click', async () => {
+  const msg = document.getElementById('acctUsernameMsg');
+  const username = document.getElementById('acctNewUsername').value.trim();
+  if (!username) { msg.textContent = 'Enter a new username.'; return; }
+  try {
+    const res = await fetch('/api/account/username', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify({ username }),
+    });
+    const data = await res.json();
+    if (!res.ok) { msg.textContent = data.error || 'Something went wrong.'; return; }
+    msg.textContent = 'Username updated.';
+    document.getElementById('acctNewUsername').value = '';
+    await refreshMe();
+  } catch (e) {
+    msg.textContent = 'Network error — try again.';
+  }
+});
+
+document.getElementById('acctSavePasswordBtn').addEventListener('click', async () => {
+  const msg = document.getElementById('acctPasswordMsg');
+  const oldPassword = document.getElementById('acctOldPassword').value;
+  const newPassword = document.getElementById('acctNewPassword').value;
+  const confirmPassword = document.getElementById('acctConfirmPassword').value;
+  if (!oldPassword || !newPassword) { msg.textContent = 'Enter your current and new password.'; return; }
+  if (newPassword !== confirmPassword) { msg.textContent = 'New passwords do not match.'; return; }
+  try {
+    const res = await fetch('/api/account/password', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ oldPassword, newPassword, confirmPassword }),
+    });
+    const data = await res.json();
+    if (!res.ok) { msg.textContent = data.error || 'Something went wrong.'; return; }
+    msg.textContent = 'Password updated.';
+    ['acctOldPassword', 'acctNewPassword', 'acctConfirmPassword'].forEach(id => { document.getElementById(id).value = ''; });
+  } catch (e) {
+    msg.textContent = 'Network error — try again.';
+  }
+});
 document.getElementById('goInsightsFromHero').addEventListener('click', () => showView('insights'));
 document.getElementById('acctPricingBtn').addEventListener('click', () => showView('pricing'));
-document.getElementById('acctGoHeroBtn').addEventListener('click', () => showView('markets'));
 
 // ---------- Pricing: element refs used by subscribeToPlan/demoActivatePlan above ----------
 const subEmailInput = document.getElementById('subEmail');

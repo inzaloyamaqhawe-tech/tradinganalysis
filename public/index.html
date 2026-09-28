@@ -272,19 +272,61 @@
   <!-- ACCOUNT -->
   <section class="view" data-view="account">
     <h1>My Account</h1>
-    <p class="section-sub">Your subscription status.</p>
-    <div class="panel" style="max-width:480px;" id="acctLoggedInBox">
-      <div class="sp-row"><span>Email</span><b id="acctEmailShown">—</b></div>
-      <div class="sp-row"><span>Status</span><b id="acctStatus">—</b></div>
-      <div class="sp-row"><span>Expires</span><b id="acctExpires">—</b></div>
-      <div class="row" style="margin-top:14px;">
-        <button class="secondary" id="acctPricingBtn">Go to Pricing</button>
-        <button class="ghost" id="acctLogoutBtn">Log out</button>
+    <p class="section-sub">Your account, subscription, and settings.</p>
+
+    <div id="acctLoggedInBox" style="display:none;">
+      <div class="panel" style="max-width:520px; margin-bottom:16px;">
+        <h3 class="section-title" style="margin-top:0; font-size:1rem;">Account info</h3>
+        <div class="sp-row"><span>Username</span><b id="acctUsernameShown">—</b></div>
+        <div class="sp-row"><span>Email</span><b id="acctEmailShown">—</b></div>
+        <div class="sp-row"><span>Name</span><b id="acctNameShown">—</b></div>
+      </div>
+
+      <div class="panel" style="max-width:520px; margin-bottom:16px;">
+        <h3 class="section-title" style="margin-top:0; font-size:1rem;">Subscription</h3>
+        <div class="sp-row"><span>Package</span><b id="acctPlanShown">—</b></div>
+        <div class="sp-row"><span>Status</span><b id="acctStatus">—</b></div>
+        <div class="sp-row"><span>Expires</span><b id="acctExpires">—</b></div>
+        <div class="sp-title" style="margin-top:12px;">Your benefits</div>
+        <ul id="acctBenefitsList" style="margin:6px 0 0; padding-left:18px; color:var(--muted); font-size:.86rem; line-height:1.7;"></ul>
+        <div class="row" style="margin-top:14px;">
+          <button class="secondary" id="acctPricingBtn">Go to Pricing</button>
+          <button class="ghost" id="acctLogoutBtn">Log out</button>
+        </div>
+      </div>
+
+      <div class="panel" style="max-width:520px; margin-bottom:16px;">
+        <h3 class="section-title" style="margin-top:0; font-size:1rem;">Favourite trading assets</h3>
+        <div id="acctFavouritesList" class="note">No favourites yet — star a market on Insights to add one.</div>
+      </div>
+
+      <div class="panel" style="max-width:520px; margin-bottom:16px;">
+        <h3 class="section-title" style="margin-top:0; font-size:1rem;">Update details</h3>
+        <div class="row"><input type="text" id="acctNewUsername" placeholder="New username" /></div>
+        <div class="row" style="margin-top:8px;"><button class="secondary" id="acctSaveUsernameBtn">Save username</button></div>
+        <div id="acctUsernameMsg" class="note"></div>
+      </div>
+
+      <div class="panel" style="max-width:520px;">
+        <h3 class="section-title" style="margin-top:0; font-size:1rem;">Change password</h3>
+        <div class="row password-row"><input type="password" id="acctOldPassword" placeholder="Current password" autocomplete="off" /></div>
+        <div class="row password-row" style="margin-top:8px;"><input type="password" id="acctNewPassword" placeholder="New password (min 6 characters)" autocomplete="off" /></div>
+        <div class="row password-row" style="margin-top:8px;"><input type="password" id="acctConfirmPassword" placeholder="Confirm new password" autocomplete="off" /></div>
+        <div class="row" style="margin-top:8px;"><button class="secondary" id="acctSavePasswordBtn">Save new password</button></div>
+        <div id="acctPasswordMsg" class="note"></div>
       </div>
     </div>
-    <div class="panel" style="max-width:480px;" id="acctLoggedOutBox">
-      <p>You're not logged in.</p>
-      <button id="acctGoHeroBtn">Create an account / log in →</button>
+
+    <div class="panel hero-auth" style="max-width:420px;" id="acctLoggedOutBox">
+      <h3 class="section-title" style="margin-top:0; font-size:1.05rem;">Log in</h3>
+      <div class="row" style="margin-top:8px;"><input type="text" id="acctAuthEmail" placeholder="Username or email" autocomplete="off" autocapitalize="off" spellcheck="false" /></div>
+      <div class="row password-row" style="margin-top:8px;">
+        <input type="password" id="acctAuthPassword" placeholder="Password" autocomplete="off" />
+        <button type="button" class="ghost pw-toggle" data-target="acctAuthPassword">Show</button>
+      </div>
+      <div class="row" style="margin-top:10px;"><button id="acctAuthSubmitBtn">Log in</button></div>
+      <div id="acctAuthMsg" class="note"></div>
+      <p class="note" style="margin-top:14px; text-align:center;">No account? <a href="#" id="acctOpenRegisterLink">Register here</a></p>
     </div>
   </section>
 
