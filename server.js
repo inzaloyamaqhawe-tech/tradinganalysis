@@ -139,6 +139,35 @@ const LABELS = Object.fromEntries([...CRYPTO_INSTRUMENTS, ...FX_INSTRUMENTS].map
 const XAU_PRIORITY_WINDOW_MS = 20 * 60 * 1000;
 const ENGINE_KEYS = ALL_KEYS.filter(k => k !== 'XAUUSD');
 
+// EUR/USD, GBP/USD, USD/JPY (real forex, not XAU — that's bot/professional-
+// managed and excluded from ENGINE_KEYS entirely already) trade on real
+// session liquidity, unlike crypto's 24/7 market. Outside real trading
+// hours, spreads widen and price gets thin/erratic — a Monday morning
+// USDJPY setup posted during the quiet Asian-session overnight window is
+// exactly what kept tagging SL, not a strategy or sizing problem. Based on
+// user research on SAST trading-session liquidity:
+//   - 23:00-07:00 SAST daily: low-liquidity overnight (Asian/Sydney quiet
+//     hours) — spreads widen, avoid.
+//   - All day Sunday: market is barely open, thin.
+//   - Monday before London opens (09:00 SAST): the week's thinnest open,
+//     prone to gaps.
+//   - Friday after 19:00 SAST: tail end of NY session into the weekend
+//     close, momentum dies and positioning gets erratic.
+// This only gates whether a NEW forex pick gets POSTED/tracked — the
+// engine still computes and shows a live read on Insights regardless;
+// crypto is completely unaffected (real 24/7 liquidity, no session gate).
+const FX_ENGINE_KEYS = new Set(FX_INSTRUMENTS.filter(f => f.key !== 'XAUUSD').map(f => f.key));
+function isGoodForexSession(date = new Date()) {
+  const sast = new Date(date.getTime() + 2 * 3600 * 1000); // SAST = UTC+2 year-round, no DST
+  const day = sast.getUTCDay(); // 0=Sun .. 6=Sat, read off the SAST-shifted instant
+  const hour = sast.getUTCHours();
+  if (day === 0 || day === 6) return false; // Sun/Sat — market closed or barely open
+  if (hour >= 23 || hour < 7) return false; // overnight low-liquidity window
+  if (day === 1 && hour < 9) return false; // Monday morning, before London opens
+  if (day === 5 && hour >= 19) return false; // Friday evening, into the weekend close
+  return true;
+}
+
 // In-memory cache of latest prices (fast reads for /api/prices)
 let latestCache = {}; // key -> { price, changePct, updatedAt }
 let lastPollAt = null;
@@ -678,9 +707,13 @@ async function trackSignals() {
   // Record if it clears MIN_CONFIDENCE_TO_POST — everything below that bar
   // still shows on the Insights page as a live read, it just never gets
   // written to the DB or tracked as an official pick.
+  const goodForexSession = isGoodForexSession();
   const actionable = ENGINE_KEYS
     .map(key => ({ key, result: results[key] }))
-    .filter(({ result }) => result && result.signal !== 'HOLD' && result.levels && result.confidence != null);
+    .filter(({ result }) => result && result.signal !== 'HOLD' && result.levels && result.confidence != null)
+    // A forex pick outside real trading-session liquidity never gets
+    // posted (crypto is unaffected — real 24/7 market, no session gate).
+    .filter(({ key }) => goodForexSession || !FX_ENGINE_KEYS.has(key));
   if (!actionable.length) return;
   const best = actionable.reduce((a, b) => (b.result.confidence > a.result.confidence ? b : a));
   if (best.result.confidence < MIN_CONFIDENCE_TO_POST) return;
