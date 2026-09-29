@@ -10,6 +10,8 @@ const { detectSmcSetup, classifyStructure } = require('./smc');
 const { detectWyckoffSetup } = require('./wyckoff');
 const { detectVolatilityBreakout } = require('./volatility');
 const { computeZones, explainZones } = require('./zones');
+const { detectBreakoutRetest, detectEngulfing, detectInsideBarBreakout } = require('./candlestick');
+const { detectRsiSignal, detectMacdSignal, detectBollingerSignal, detectVwapSignal } = require('./indicators');
 
 const ATR_PERIOD = 14;
 const ATR_BASELINE_PERIOD = 40;
@@ -179,6 +181,13 @@ const STRATEGY_LABEL = {
   SMC: 'Smart Money Concepts (multi-timeframe order block/FVG)',
   WYCKOFF: 'Wyckoff Spring/Upthrust (institutional liquidity sweep)',
   VOLBRK: 'Volatility compression breakout (ATR/Donchian)',
+  BRK_RETEST: 'Breakout-retest',
+  ENGULF: 'Engulfing candle at a structural zone',
+  INSIDE_BAR: 'Inside-bar breakout',
+  RSI: 'RSI momentum/reversal',
+  MACD: 'MACD momentum crossover',
+  BOLL: 'Bollinger Band mean-reversion',
+  VWAP: 'VWAP trend/reversion',
 };
 
 // Plain-language, non-jargon explanations of *why* a signal appeared — the
@@ -214,6 +223,20 @@ function explainSignal(strategy, side, regime, patternMeta, smcMeta, wyckoffMeta
       const ratio = volMeta?.volumeRatio != null ? volMeta.volumeRatio.toFixed(1) : 'well above';
       return `Volatility had compressed into a tight range (recent ATR well below its longer-run average) — the calm that often precedes a real expansion. Price just broke out of that range on ${ratio}x normal volume, in the same direction as the higher-timeframe trend, which is the combination this setup specifically waits for rather than trading every quiet-range breakout.`;
     }
+    case 'BRK_RETEST':
+      return `Price broke out of a defined range, then came back to retest the broken level from the other side and held — a classic "former resistance becomes support" (or the mirror for a sell) confirmation, generally steadier than reacting to the breakout candle itself.`;
+    case 'ENGULF':
+      return `A full-bodied candle overtook the entire prior candle's range while sitting inside a real structural zone (an order block or fair value gap) — a decisive shift in control right at a level that has mattered before, not just anywhere on the chart.`;
+    case 'INSIDE_BAR':
+      return `Price compressed into a candle fully contained inside the prior "mother" candle's range, then broke decisively beyond that mother candle's own high or low — a coiled-spring expansion pattern.`;
+    case 'RSI':
+      return `RSI (momentum) confirmed this ${dir === 'up' ? 'reversal out of oversold' : 'reversal out of overbought'} with price action agreeing on the same candle — used here as a momentum-regime signal, not a bare "RSI crossed a number" trigger.`;
+    case 'MACD':
+      return `MACD's fast/slow momentum lines crossed in the ${dir} direction while the broader structure was already trending that way — a momentum confirmation of an existing trend, not a standalone signal against it.`;
+    case 'BOLL':
+      return `Price stretched outside its own statistical volatility band (2 standard deviations from the 20-period average) and closed back inside — a range-bound overextension snapping back toward the mean, not traded during a real trending market.`;
+    case 'VWAP':
+      return `Price ${dir === 'up' ? 'pulled back to session VWAP and held above it' : 'pulled back to session VWAP and held below it'}, confirming the volume-weighted average price as support/resistance in the direction of the existing trend.`;
     default:
       return 'No clear setup right now.';
   }
@@ -247,7 +270,13 @@ const PATTERN_LABEL = {
 // tight sat inside a single 1h candle's normal range, so an ordinary spike
 // bar (not even a reversal) was tagging SL before the setup got a real
 // chance to work, dragging down aggregate win rate on every instrument.
-const STRATEGY_SL_ATR = { CRT: 1.5, TREND: 1.8, BRK: 2.3, MREV: 1.5, PATTERN: 2.0, SMC: 2.0, WYCKOFF: 1.8, VOLBRK: 2.3 };
+const STRATEGY_SL_ATR = {
+  CRT: 1.5, TREND: 1.8, BRK: 2.3, MREV: 1.5, PATTERN: 2.0, SMC: 2.0, WYCKOFF: 1.8, VOLBRK: 2.3,
+  // New strategies all carry a structureLevel (see signal.structureLevel in
+  // runEngine below), so this ATR figure only ever acts as the floor —
+  // the real stop is whichever is farther, per computeLevels.
+  BRK_RETEST: 1.8, ENGULF: 1.5, INSIDE_BAR: 1.5, RSI: 1.5, MACD: 1.8, BOLL: 1.5, VWAP: 1.8,
+};
 const RISK_REWARD_TO_TP4 = 2; // 1 : 2
 
 function decimalsFor(price) {
@@ -393,7 +422,28 @@ function runEngine(closed, smcCtx, instrument) {
     // — back inside the range means the breakout failed.
     signal = { side: volResult.side, structureLevel: volResult.side === 'BUY' ? volResult.channelLow : volResult.channelHigh };
   } else {
-    ({ strategy, signal, patternMeta } = selectSignal(closed, regime, atrNow, atrBaseline, patterns));
+    // Reference-book additions (candlestick.js/indicators.js), checked
+    // before the original regime cascade — each is its own stricter,
+    // less-often-firing setup family; the regime cascade below stays the
+    // everyday fallback exactly as it always was.
+    const retestResult = detectBreakoutRetest(closed, atrNow);
+    const engulfResult = !retestResult ? detectEngulfing(closed, zones) : null;
+    const insideBarResult = !retestResult && !engulfResult ? detectInsideBarBreakout(closed) : null;
+    const rsiResult = !retestResult && !engulfResult && !insideBarResult ? detectRsiSignal(closed, regime, atrNow) : null;
+    const macdResult = !retestResult && !engulfResult && !insideBarResult && !rsiResult ? detectMacdSignal(closed, regime) : null;
+    const bollResult = !retestResult && !engulfResult && !insideBarResult && !rsiResult && !macdResult ? detectBollingerSignal(closed, regime) : null;
+
+    if (retestResult) { strategy = 'BRK_RETEST'; signal = retestResult; }
+    else if (engulfResult) { strategy = 'ENGULF'; signal = engulfResult; }
+    else if (insideBarResult) { strategy = 'INSIDE_BAR'; signal = insideBarResult; }
+    else if (rsiResult) { strategy = 'RSI'; signal = rsiResult; }
+    else if (macdResult) { strategy = 'MACD'; signal = macdResult; }
+    else if (bollResult) { strategy = 'BOLL'; signal = bollResult; }
+    else {
+      const vwap = detectVwapSignal(closed, regime);
+      if (vwap) { strategy = 'VWAP'; signal = vwap; }
+      else ({ strategy, signal, patternMeta } = selectSignal(closed, regime, atrNow, atrBaseline, patterns));
+    }
   }
 
   if (!signal) {
