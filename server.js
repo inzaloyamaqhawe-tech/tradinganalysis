@@ -434,10 +434,13 @@ async function getXauInsight() {
     confidence: latest.confidence,
     levels,
     note: isOpen
-      ? `This setup was analyzed and posted by our professional trading team, not our automated engine (setup strength ${latest.confidence != null ? latest.confidence + '/100' : 'not rated'}). Informational only — conduct your own analysis and risk assessment before making any trading decision.`
+      ? `This setup was analyzed and posted by our professional trading team, not our automated engine (setup strength ${latest.confidence != null ? latest.confidence + '/100' : 'not rated'}). Informational only — you are responsible for your own analysis and risk assessment before making any trading decision, same as every other setup on this platform.`
       : 'The most recent professional XAU/USD call has since resolved — check Track Record for the outcome. Our own engine no longer analyzes XAU directly.',
+    // Never name the analyst on the frontend, even when posted_by is set
+    // on the row — that field is for our own internal tracking only, not
+    // for public display, to protect the individual professional's identity.
     explanation: isOpen
-      ? `A member of our professional trading team identified this ${biasWord} XAU/USD setup${latest.posted_by ? ` via ${latest.posted_by}` : ''}. This is a human, discretionary call — not an algorithmic signal — so treat it with the same informational-only framing as everything else on this platform.`
+      ? `A member of our professional trading team identified this ${biasWord} XAU/USD setup. This is a human, discretionary call — not an algorithmic signal, and not a guarantee — so the same rule applies as everywhere else on this platform: conduct your own analysis and make your own risk decision before acting on it.`
       : null,
     invalidation: (isOpen && levels?.sl != null) ? `This idea weakens if price closes back ${latest.side === 'BUY' ? 'below' : 'above'} ${levels.sl} — that's the invalidation point.` : null,
     patterns: [], zones: null, zoneNote: null,

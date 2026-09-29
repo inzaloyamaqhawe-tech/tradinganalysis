@@ -38,7 +38,7 @@ Field notes:
 - `side` — `'BUY'` or `'SELL'`, exactly (uppercase).
 - `entry` / `sl` / `tp1`-`tp4` — plain decimal numbers, no currency symbols or commas. `tp1`-`tp4` don't all have to be filled in if the professional only gave one or two targets — leave the rest `NULL`.
 - `confidence` — optional, `0`-`100` if the professional gives one, otherwise `NULL`.
-- `posted_by` — optional, whatever identifies which channel/professional this came from. Purely informational, never shown as a guarantee.
+- `posted_by` — optional, whatever identifies which channel/professional this came from. Internal record-keeping only — the app never displays this value to users, to protect the individual professional's identity.
 - `created_at` — **must be the real time you're posting it**, in UTC. This timestamp is what the app uses to decide whether XAU is "fresh enough" (posted within the last 20 minutes of a user's login) to show as the top-priority setup — an old or backdated timestamp will make it look stale immediately.
 - `status` — always `'open'` on the initial insert.
 
