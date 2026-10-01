@@ -14,6 +14,10 @@
 <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png" />
 <link rel="icon" type="image/png" sizes="16x16" href="favicon-16.png" />
 <link rel="apple-touch-icon" href="img/apple-touch-icon.png" />
+<meta name="theme-color" content="#081120" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
 <link rel="stylesheet" href="css/styles.css" />
 </head>
 <body>
@@ -23,7 +27,14 @@
      separate loading state — toggled by body.gated in app.js. -->
 <div class="gate-overlay" id="authGate">
   <div class="panel hero-auth gate-card">
-    <h3 class="section-title" style="margin-top:0; font-size:1.05rem;">Log in</h3>
+    <div class="gate-brand">
+      <img src="img/mark.png" alt="" />
+      <div>
+        <div class="gate-brand-name">Trading<b>Analysis</b></div>
+        <div class="gate-brand-sub">by Inzalo Yamaqhawe Technologies</div>
+      </div>
+    </div>
+    <h3 class="section-title" style="margin-top:0; font-size:1.15rem;">Welcome back</h3>
     <p class="note" style="margin-top:0;">Log in or register to see live markets, insights, and track record.</p>
     <div class="row" style="margin-top:8px;"><input type="text" id="gateAuthEmail" placeholder="Username or email" autocomplete="off" autocapitalize="off" spellcheck="false" /></div>
     <div class="row password-row" style="margin-top:8px;">
@@ -365,8 +376,18 @@
 
 <footer class="footer">
   <div class="footer-inner">
-    <div>POWERED BY: <a href="https://iytechnologies.co.za" target="_blank" rel="noopener"><strong>Inzalo Yamaqhawe Technologies</strong></a></div>
-    <div><a href="#/risk">Risk Disclosure</a> · Questions? Reach us via PayPal.me/IYTechnologies for now.</div>
+    <div class="footer-brand">
+      <img src="img/mark.png" alt="" />
+      <div>
+        <div><strong>Trading<span class="footer-accent">Analysis</span></strong></div>
+        <div>Powered by <a href="https://iytechnologies.co.za" target="_blank" rel="noopener"><strong>Inzalo Yamaqhawe Technologies</strong></a></div>
+      </div>
+    </div>
+    <div class="footer-links">
+      <a href="#/risk">Risk Disclosure</a>
+      <a href="mailto:info@iytechnologies.co.za">info@iytechnologies.co.za</a>
+      <span>Informational only — not financial advice.</span>
+    </div>
   </div>
 </footer>
 
