@@ -38,6 +38,11 @@ const PAYPAL_LINK = process.env.PAYPAL_LINK || `https://paypal.me/${PAYPAL_HANDL
 const PRICE_MONTHLY = process.env.PRICE_LABEL || `R${PLANS.premium.price}/month`;
 function payLinkFor(plan) { return `https://paypal.me/${PAYPAL_HANDLE}/${PLANS[plan]?.price ?? PLANS.premium.price}`; }
 function priceLabelFor(plan) { return `R${PLANS[plan]?.price ?? PLANS.premium.price}/month`; }
+// Every plan someone can pay for — derived from plans.js so a new tier
+// (like elite_max) can't silently fall back to Premium at checkout/activation.
+const PAID_PLANS = Object.keys(PLANS).filter(k => k !== 'free');
+function paidPlanOr(planKey, fallback = 'premium') { return PAID_PLANS.includes(planKey) ? planKey : fallback; }
+const PAYMENT_CONTACT_EMAIL = 'info@iytechnologies.co.za';
 // Same env var names as the PHP admin's own db.php (DB_HOST/DB_USER/
 // DB_PASS/DB_NAME, MYSQL_* as aliases) so both apps configure against the
 // one Xneelo MySQL database the exact same way.
@@ -950,13 +955,15 @@ app.get('/api/prices', (req, res) => {
 
 app.post('/api/subscribe', async (req, res) => {
   const email = req.authEmail || String(req.body?.email || '').trim().toLowerCase();
-  const plan = ['premium', 'pro', 'elite'].includes(req.body?.plan) ? req.body.plan : 'premium';
+  const plan = paidPlanOr(req.body?.plan);
   if (!isValidEmail(email)) {
     return res.status(400).json({ error: 'Enter a valid email address.' });
   }
   await store.upsertPending(email);
   const price = priceLabelFor(plan);
   const link = payLinkFor(plan);
+  // PayFast/Payflex are pending verification, so activation is manual:
+  // never promise instant access until a real payment webhook exists.
   res.json({
     ok: true,
     demoMode: DEMO_MODE,
@@ -965,7 +972,7 @@ app.post('/api/subscribe', async (req, res) => {
     price,
     instructions: DEMO_MODE
       ? `Demo mode: no real charge. Click "Simulate Payment" below to test what a ${PLANS[plan].label} subscriber sees.`
-      : `Pay ${price} via the link, then message us your payment reference with this email (${email}) so we can activate your ${PLANS[plan].label} access. Activation is manual for now — usually within a few hours.`,
+      : `PayFast and Payflex are currently pending verification, so subscriptions are activated manually after payment confirmation. Pay ${price} using the link below, then email your proof of payment or payment reference to ${PAYMENT_CONTACT_EMAIL}, quoting your account email (${email}) and the plan (${PLANS[plan].label}). Your plan is activated once the payment is verified.`,
   });
 });
 
@@ -974,7 +981,7 @@ app.post('/api/subscribe', async (req, res) => {
 app.post('/api/demo/activate', async (req, res) => {
   if (!DEMO_MODE) return res.status(403).json({ error: 'Demo activation is disabled — real payments are live.' });
   const email = req.authEmail || String(req.body?.email || '').trim().toLowerCase();
-  const plan = ['premium', 'pro', 'elite'].includes(req.body?.plan) ? req.body.plan : 'premium';
+  const plan = paidPlanOr(req.body?.plan);
   if (!email) return res.status(400).json({ error: 'email required' });
   await store.activate(email, 30, plan);
   sendMail(email, `Your TradingAnalysis ${PLANS[plan].label} subscription is active (demo)`, `This is a demo activation — no real payment was taken. Your ${PLANS[plan].label} access is active for 30 days.`);
@@ -1278,7 +1285,7 @@ app.get('/api/admin/stats', requireAdmin, async (req, res) => {
 app.post('/api/admin/activate', requireAdmin, async (req, res) => {
   const email = String(req.body?.email || '').trim().toLowerCase();
   const days = Number(req.body?.days || 30);
-  const plan = ['premium', 'pro', 'elite'].includes(req.body?.plan) ? req.body.plan : 'premium';
+  const plan = paidPlanOr(req.body?.plan);
   if (!email) return res.status(400).json({ error: 'email required' });
   await store.activate(email, days, plan);
   sendMail(email, 'Your TradingAnalysis subscription is active', `Thanks for your payment — your ${PLANS[plan].label} access is now active for ${days} days. You can view your insights any time you're logged in.`);
