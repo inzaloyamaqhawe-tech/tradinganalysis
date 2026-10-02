@@ -667,10 +667,16 @@ async function trackSignals() {
   // ---- Resolve every open system signal via a real candle SL/TP walk.
   // No assumption of exactly one open row — a sustained challenger can add
   // a new one while an older pick is still resolving on its own (see
-  // below). Bot-sourced rows (XAU) are explicitly skipped: the bot
-  // resolves its own signals directly (see sql/BOT_INSTRUCTIONS.md).
-  const openSystemSignals = (await store.getOpenSignals()).filter(s => s.source !== 'bot');
-  for (const sig of openSystemSignals) {
+  // below). Bot-sourced rows (XAU) normally resolve themselves (see
+  // sql/BOT_INSTRUCTIONS.md); only once one has sat open past
+  // BOT_SELF_RESOLVE_AFTER_MS does our engine step in and settle it from
+  // the candles since it was posted — SL first = loss, any TP before a
+  // return to SL = win. This only ever RESOLVES a bot call; our engine
+  // never generates XAU signals itself.
+  const BOT_SELF_RESOLVE_AFTER_MS = 12 * 60 * 60 * 1000;
+  const toResolve = (await store.getOpenSignals()).filter(s =>
+    s.source !== 'bot' || (Date.now() - new Date(s.created_at).getTime()) >= BOT_SELF_RESOLVE_AFTER_MS);
+  for (const sig of toResolve) {
     const key = sig.instrument;
     let candles;
     try { candles = await getResolutionCandlesFor(key, new Date(sig.created_at).getTime()); } catch (e) { candles = []; }
@@ -696,6 +702,11 @@ async function trackSignals() {
     if (touchLabels.length) {
       await alertLevelTouch(sig, touchLabels);
       patch.alerted_levels = [...alertedLevels, ...touchLabels];
+    }
+    // A bot row we just closed has already been notified above — mark it
+    // so the bot-close notifier doesn't push a second "closed" alert.
+    if (sig.source === 'bot' && patch.status === 'closed') {
+      patch.alerted_levels = [...new Set([...(patch.alerted_levels || alertedLevels), 'CLOSED'])];
     }
     await store.updateSignalOutcome(sig.id, patch);
   }
