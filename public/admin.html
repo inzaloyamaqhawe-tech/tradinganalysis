@@ -127,7 +127,7 @@
         <td>${s.email}</td>
         <td class="status-${s.status}">${s.status}</td>
         <td>${s.plan || '—'}</td>
-        <td>${s.expires_at ? new Date(s.expires_at).toLocaleDateString() : '—'}</td>
+        <td>${s.expiresAt ? new Date(s.expiresAt).toLocaleDateString() : '—'}</td>
         <td>
           <button data-email="${s.email}" class="act">Activate 30d</button>
           <button data-email="${s.email}" class="danger deact">Deactivate</button>

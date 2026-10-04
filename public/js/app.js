@@ -65,12 +65,119 @@ navScrim.addEventListener('click', closeMobileNav);
 function routeFromHash() {
   const name = (window.location.hash.replace('#/', '') || 'dashboard').trim();
   const valid = [...views].some(v => v.dataset.view === name);
-  const shown = valid ? name : 'dashboard';
+  // The Admin view is only for admin accounts (the server also refuses
+  // every /api/admin call from anyone else — this is just the UI side).
+  const allowed = name !== 'admin' || !!currentUser?.isAdmin;
+  const shown = valid && allowed ? name : 'dashboard';
   showView(shown);
   if (shown === 'track') loadTrackRecord();
   if (shown === 'dashboard') loadDashboardCharts();
   if (shown === 'notifications') loadNotifications();
+  if (shown === 'admin') loadAdmin();
 }
+
+// ---------- Admin (manual plan activation) ----------
+function escapeHtml(v) {
+  return String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+let adminUsers = [];
+
+async function adminApi(path, opts = {}) {
+  const res = await fetch(path, { ...opts, headers: { 'Content-Type': 'application/json', ...authHeaders(), ...(opts.headers || {}) } });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
+  return data;
+}
+
+function isActiveSub(u) { return u.status === 'active' && u.expiresAt && new Date(u.expiresAt) > new Date(); }
+
+function renderAdminRows() {
+  const host = document.getElementById('adminRows');
+  const q = document.getElementById('adminSearch').value.trim().toLowerCase();
+  const filter = document.getElementById('adminFilter').value;
+  const rows = adminUsers.filter(u => {
+    if (filter === 'active' && !isActiveSub(u)) return false;
+    if (filter === 'notactive' && isActiveSub(u)) return false;
+    if (!q) return true;
+    return [u.email, u.username, u.firstName, u.lastName].some(v => v && v.toLowerCase().includes(q));
+  });
+  if (!rows.length) { host.innerHTML = '<tr><td colspan="6" class="note">No matching users.</td></tr>'; return; }
+  host.innerHTML = rows.map(u => {
+    const active = isActiveSub(u);
+    const name = [u.firstName, u.lastName].filter(Boolean).join(' ');
+    const planLabel = active ? (PLANS?.[u.plan]?.label || u.plan) : 'Free';
+    const statusPill = active
+      ? '<span class="outcome-pill win">Active</span>'
+      : `<span class="outcome-pill ${u.status === 'inactive' ? 'loss' : 'open'}">${u.status === 'inactive' ? 'Deactivated' : (u.status === 'active' ? 'Expired' : 'Not active')}</span>`;
+    const id = escapeHtml(u.username || u.email);
+    return `<tr>
+      <td><b>${escapeHtml(u.username || '—')}</b>${u.isAdmin ? ' <span class="plan-badge" style="margin:0;">ADMIN</span>' : ''}<div class="note" style="margin:2px 0 0;">${escapeHtml(name)}</div></td>
+      <td>${escapeHtml(u.email)}</td>
+      <td>${escapeHtml(planLabel)}</td>
+      <td>${statusPill}</td>
+      <td>${active ? new Date(u.expiresAt).toLocaleDateString() : '—'}</td>
+      <td style="white-space:nowrap;">
+        <button class="secondary admin-pick" data-user="${id}" style="padding:6px 12px; font-size:.8rem;">Activate…</button>
+        ${active && !u.isAdmin ? `<button class="ghost admin-deact" data-user="${id}" style="color:var(--down);">Deactivate</button>` : ''}
+      </td>
+    </tr>`;
+  }).join('');
+  host.querySelectorAll('.admin-pick').forEach(b => b.addEventListener('click', () => {
+    document.getElementById('adminUser').value = b.dataset.user;
+    document.getElementById('adminUser').focus();
+    document.getElementById('adminUser').scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }));
+  host.querySelectorAll('.admin-deact').forEach(b => b.addEventListener('click', async () => {
+    if (!confirm(`Deactivate ${b.dataset.user}'s plan? They drop back to Free immediately.`)) return;
+    try { await adminApi('/api/admin/deactivate', { method: 'POST', body: JSON.stringify({ user: b.dataset.user }) }); await loadAdmin(); }
+    catch (e) { alert(e.message); }
+  }));
+}
+
+async function loadAdmin() {
+  if (!currentUser?.isAdmin) return;
+  const planSel = document.getElementById('adminPlan');
+  if (!planSel.options.length && PLANS) {
+    planSel.innerHTML = Object.values(PLANS).filter(p => p.key !== 'free')
+      .map(p => `<option value="${escapeHtml(p.key)}">${escapeHtml(p.label)} (R${escapeHtml(p.price)})</option>`).join('');
+  }
+  try {
+    const [{ subscribers }, stats] = await Promise.all([adminApi('/api/admin/subscribers'), adminApi('/api/admin/stats')]);
+    adminUsers = subscribers;
+    const u = stats.users;
+    document.getElementById('adminStats').innerHTML = `
+      <div class="stat-chip"><div class="n">${u.total}</div><div class="l">Accounts</div></div>
+      <div class="stat-chip"><div class="n">${u.active}</div><div class="l">Active plans</div></div>
+      <div class="stat-chip"><div class="n">${u.total - u.active}</div><div class="l">Not active</div></div>
+      <div class="stat-chip"><div class="n">R${stats.revenue.estimatedMRR}</div><div class="l">Est. monthly</div></div>`;
+    renderAdminRows();
+  } catch (e) {
+    document.getElementById('adminRows').innerHTML = `<tr><td colspan="6" class="note">${escapeHtml(e.message)}</td></tr>`;
+  }
+}
+
+document.getElementById('adminSearch').addEventListener('input', renderAdminRows);
+document.getElementById('adminFilter').addEventListener('change', renderAdminRows);
+document.getElementById('adminActivateBtn').addEventListener('click', async () => {
+  const msg = document.getElementById('adminActivateMsg');
+  const user = document.getElementById('adminUser').value.trim();
+  const plan = document.getElementById('adminPlan').value;
+  const days = Number(document.getElementById('adminDays').value);
+  if (!user) { msg.textContent = 'Enter their email or username.'; return; }
+  const planLabel = PLANS?.[plan]?.label || plan;
+  if (!confirm(`Activate ${planLabel} for ${user} for ${days} days? Only do this after confirming their payment.`)) return;
+  const btn = document.getElementById('adminActivateBtn');
+  btn.disabled = true;
+  try {
+    const r = await adminApi('/api/admin/activate', { method: 'POST', body: JSON.stringify({ user, plan, days }) });
+    const until = r.subscriber?.expiresAt ? new Date(r.subscriber.expiresAt).toLocaleDateString() : '';
+    msg.textContent = `✅ ${planLabel} activated for ${r.subscriber?.username || user}${until ? ` until ${until}` : ''}${r.carriedOverDays ? ` (includes ${r.carriedOverDays} remaining days carried over)` : ''}.`;
+    document.getElementById('adminUser').value = '';
+    await loadAdmin();
+  } catch (e) {
+    msg.textContent = e.message;
+  } finally { btn.disabled = false; }
+});
 window.addEventListener('hashchange', routeFromHash);
 
 // ---------- Dashboard charts (plain canvas, matching the rest of this
@@ -1190,6 +1297,15 @@ async function refreshMe() {
 function updateAuthUI() {
   const loggedIn = !!currentUser;
   document.body.classList.toggle('gated', !loggedIn);
+  const isAdmin = !!currentUser?.isAdmin;
+  document.getElementById('adminNavItem').style.display = isAdmin ? '' : 'none';
+  if (!isAdmin) {
+    // Don't leave another account's list sitting in the page after logout.
+    adminUsers = [];
+    document.getElementById('adminRows').innerHTML = '';
+    document.getElementById('adminStats').innerHTML = '';
+    if (window.location.hash === '#/admin') showView('dashboard');
+  }
   if (!loggedIn) document.getElementById('gateAuthMsg').textContent = '';
   document.getElementById('authLoggedOut').style.display = loggedIn ? 'none' : 'block';
   document.getElementById('authLoggedIn').style.display = loggedIn ? 'block' : 'none';

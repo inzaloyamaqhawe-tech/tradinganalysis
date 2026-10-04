@@ -954,10 +954,10 @@ app.get('/api/prices', (req, res) => {
 });
 
 app.post('/api/subscribe', async (req, res) => {
-  const email = req.authEmail || String(req.body?.email || '').trim().toLowerCase();
+  const email = req.authEmail || ''; // session only — never trust an email from the request (impersonation)
   const plan = paidPlanOr(req.body?.plan);
-  if (!isValidEmail(email)) {
-    return res.status(400).json({ error: 'Enter a valid email address.' });
+  if (!email) {
+    return res.status(401).json({ error: 'Please log in first.' });
   }
   await store.upsertPending(email);
   const price = priceLabelFor(plan);
@@ -980,17 +980,17 @@ app.post('/api/subscribe', async (req, res) => {
 // flow can be tested end-to-end before real payments/DB are wired in.
 app.post('/api/demo/activate', async (req, res) => {
   if (!DEMO_MODE) return res.status(403).json({ error: 'Demo activation is disabled — real payments are live.' });
-  const email = req.authEmail || String(req.body?.email || '').trim().toLowerCase();
+  const email = req.authEmail || ''; // session only — never trust an email from the request (impersonation)
   const plan = paidPlanOr(req.body?.plan);
-  if (!email) return res.status(400).json({ error: 'email required' });
+  if (!email) return res.status(401).json({ error: 'Please log in first.' });
   await store.activate(email, 30, plan);
   sendMail(email, `Your TradingAnalysis ${PLANS[plan].label} subscription is active (demo)`, `This is a demo activation — no real payment was taken. Your ${PLANS[plan].label} access is active for 30 days.`);
   res.json({ ok: true, plan });
 });
 
 app.get('/api/insights', async (req, res) => {
-  const email = req.authEmail || String(req.query.email || '').trim().toLowerCase();
-  if (!email) return res.status(400).json({ error: 'email is required' });
+  const email = req.authEmail || ''; // session only — never trust an email from the request (impersonation)
+  if (!email) return res.status(401).json({ error: 'Please log in first.' });
 
   const sub = await store.getSubscriber(email);
   const plan = planOf(sub);
@@ -1040,7 +1040,7 @@ app.get('/api/insights', async (req, res) => {
 
 // AI Elite: per-signal AI explanation, gated to elite plan.
 app.get('/api/ai/explain', async (req, res) => {
-  const email = req.authEmail || String(req.query.email || '').trim().toLowerCase();
+  const email = req.authEmail || ''; // session only — never trust an email from the request (impersonation)
   const key = String(req.query.key || '');
   if (!ALL_KEYS.includes(key)) return res.status(404).json({ error: 'unknown instrument' });
   const sub = await store.getSubscriber(email);
@@ -1053,7 +1053,7 @@ app.get('/api/ai/explain', async (req, res) => {
 
 // AI Elite: Q&A about a specific market's current setup, gated to elite plan.
 app.post('/api/ai/ask', async (req, res) => {
-  const email = req.authEmail || String(req.body?.email || '').trim().toLowerCase();
+  const email = req.authEmail || ''; // session only — never trust an email from the request (impersonation)
   const key = String(req.body?.key || '');
   const question = String(req.body?.question || '').trim();
   if (!question) return res.status(400).json({ error: 'question required' });
@@ -1066,7 +1066,7 @@ app.post('/api/ai/ask', async (req, res) => {
 
 // AI Elite: daily summary across all open setups, gated to elite plan.
 app.get('/api/ai/daily-summary', async (req, res) => {
-  const email = req.authEmail || String(req.query.email || '').trim().toLowerCase();
+  const email = req.authEmail || ''; // session only — never trust an email from the request (impersonation)
   const sub = await store.getSubscriber(email);
   if (!atLeast(planOf(sub), 'elite')) return res.status(402).json({ locked: true, message: 'Daily AI summaries are an AI Elite feature.' });
   const open = await store.getOpenSignals();
@@ -1076,8 +1076,8 @@ app.get('/api/ai/daily-summary', async (req, res) => {
 
 // Pro+: save/toggle favourite markets.
 app.post('/api/favourites', async (req, res) => {
-  const email = req.authEmail || String(req.body?.email || '').trim().toLowerCase();
-  if (!email) return res.status(400).json({ error: 'email required' });
+  const email = req.authEmail || ''; // session only — never trust an email from the request (impersonation)
+  if (!email) return res.status(401).json({ error: 'Please log in first.' });
   const sub = await store.getSubscriber(email);
   if (!atLeast(planOf(sub), 'pro')) return res.status(402).json({ locked: true, message: 'Favourites are a Pro Trader Tools feature.' });
   const favourites = Array.isArray(req.body?.favourites) ? req.body.favourites.filter(k => ALL_KEYS.includes(k)) : [];
@@ -1090,8 +1090,8 @@ app.post('/api/favourites', async (req, res) => {
 // system's own engine fired one or the professional bot posted an XAU
 // call, in one feed.
 app.get('/api/notifications', async (req, res) => {
-  const email = req.authEmail || String(req.query.email || '').trim().toLowerCase();
-  if (!email) return res.status(400).json({ error: 'email required' });
+  const email = req.authEmail || ''; // session only — never trust an email from the request (impersonation)
+  if (!email) return res.status(401).json({ error: 'Please log in first.' });
   const sub = await store.getSubscriber(email);
   const plan = planOf(sub);
   if (!atLeast(plan, 'pro')) return res.status(402).json({ locked: true, message: 'Notifications are a Pro Trader Tools feature.' });
@@ -1104,15 +1104,15 @@ app.get('/api/notifications', async (req, res) => {
 });
 
 app.post('/api/notifications/:id/read', async (req, res) => {
-  const email = req.authEmail || String(req.body?.email || '').trim().toLowerCase();
-  if (!email) return res.status(400).json({ error: 'email required' });
+  const email = req.authEmail || ''; // session only — never trust an email from the request (impersonation)
+  if (!email) return res.status(401).json({ error: 'Please log in first.' });
   await store.markNotificationRead(email, Number(req.params.id));
   res.json({ ok: true });
 });
 
 app.post('/api/notifications/mark-all-read', async (req, res) => {
-  const email = req.authEmail || String(req.body?.email || '').trim().toLowerCase();
-  if (!email) return res.status(400).json({ error: 'email required' });
+  const email = req.authEmail || ''; // session only — never trust an email from the request (impersonation)
+  if (!email) return res.status(401).json({ error: 'Please log in first.' });
   const sub = await store.getSubscriber(email);
   const plan = planOf(sub);
   if (!atLeast(plan, 'pro')) return res.status(402).json({ locked: true, message: 'Notifications are a Pro Trader Tools feature.' });
@@ -1121,7 +1121,7 @@ app.post('/api/notifications/mark-all-read', async (req, res) => {
 });
 
 app.get('/api/notifications/unread-count', async (req, res) => {
-  const email = req.authEmail || String(req.query.email || '').trim().toLowerCase();
+  const email = req.authEmail || ''; // session only — never trust an email from the request (impersonation)
   if (!email) return res.json({ count: 0 });
   const sub = await store.getSubscriber(email);
   const plan = planOf(sub);
@@ -1137,7 +1137,7 @@ app.get('/api/notifications/unread-count', async (req, res) => {
 // only closed (resolved, no-longer-actionable) rows are ever shown in full
 // to a non-premium visitor.
 app.get('/api/performance', async (req, res) => {
-  const email = req.authEmail || String(req.query.email || '').trim().toLowerCase();
+  const email = req.authEmail || ''; // session only — never trust an email from the request (impersonation)
   let plan = 'free';
   if (email) plan = planOf(await store.getSubscriber(email));
   const premium = atLeast(plan, 'premium');
@@ -1178,7 +1178,7 @@ app.get('/api/history', async (req, res) => {
   const key = String(req.query.key || '');
   if (!ALL_KEYS.includes(key)) return res.status(404).json({ error: 'unknown instrument' });
 
-  const email = req.authEmail || String(req.query.email || '').trim().toLowerCase();
+  const email = req.authEmail || ''; // session only — never trust an email from the request (impersonation)
   let plan = 'free';
   if (email) plan = planOf(await store.getSubscriber(email));
   const premium = atLeast(plan, 'premium'); // signal/levels
@@ -1225,17 +1225,51 @@ app.get('/api/history', async (req, res) => {
 });
 
 // ---- Admin (protected by ADMIN_KEY) ----
-function requireAdmin(req, res, next) {
-  const key = req.headers['x-admin-key'] || req.query.adminKey;
-  if (key !== ADMIN_KEY) return res.status(401).json({ error: 'unauthorized' });
-  next();
+// Admin access: either a logged-in admin account (the in-app Admin tab) or
+// the legacy x-admin-key header (the standalone admin.html).
+// The key path only works with a real, long ADMIN_KEY — the built-in
+// default is public (it's in this source), so it must never grant access.
+const ADMIN_KEY_USABLE = ADMIN_KEY !== 'change-me-admin-key' && ADMIN_KEY.length >= 16;
+function safeEqual(a, b) {
+  const x = Buffer.from(String(a)), y = Buffer.from(String(b));
+  return x.length === y.length && crypto.timingSafeEqual(x, y);
+}
+async function requireAdmin(req, res, next) {
+  const key = req.headers['x-admin-key'];
+  if (ADMIN_KEY_USABLE && key && safeEqual(key, ADMIN_KEY)) return next();
+  if (req.authEmail) {
+    const sub = await store.getSubscriber(req.authEmail);
+    if (sub?.is_admin) return next();
+  }
+  return res.status(401).json({ error: 'unauthorized' });
+}
+
+// Never send password hashes (or anything else internal) to the browser —
+// even to an admin.
+function publicSubscriber(s) {
+  return {
+    email: s.email, username: s.username || null,
+    firstName: s.first_name || null, lastName: s.last_name || null,
+    plan: s.plan || null, status: s.status, expiresAt: s.expires_at || null,
+    createdAt: s.created_at || null, isAdmin: !!s.is_admin,
+  };
+}
+
+// The admin may only know someone's username, so accept either.
+async function findSubscriberByIdentifier(identifier) {
+  const id = String(identifier || '').trim();
+  if (!id) return null;
+  return isValidEmail(id) ? store.getSubscriber(id.toLowerCase()) : store.getSubscriberByUsername(id);
 }
 
 app.get('/api/admin/subscribers', requireAdmin, async (req, res) => {
   const q = String(req.query.q || '').trim().toLowerCase();
   let subs = await store.listSubscribers();
-  if (q) subs = subs.filter(s => s.email.toLowerCase().includes(q));
-  res.json({ subscribers: subs.map(s => ({ ...s, plan: s.plan || null })) });
+  if (q) {
+    subs = subs.filter(s => [s.email, s.username, s.first_name, s.last_name]
+      .some(v => v && String(v).toLowerCase().includes(q)));
+  }
+  res.json({ subscribers: subs.map(publicSubscriber) });
 });
 
 app.get('/api/admin/stats', requireAdmin, async (req, res) => {
@@ -1283,19 +1317,26 @@ app.get('/api/admin/stats', requireAdmin, async (req, res) => {
 });
 
 app.post('/api/admin/activate', requireAdmin, async (req, res) => {
-  const email = String(req.body?.email || '').trim().toLowerCase();
-  const days = Number(req.body?.days || 30);
+  const sub = await findSubscriberByIdentifier(req.body?.user || req.body?.email);
+  if (!sub) return res.status(404).json({ error: 'No account found for that email/username — the person must register first.' });
+  const days = Math.round(Number(req.body?.days || 30));
+  if (!(days >= 1 && days <= 366)) return res.status(400).json({ error: 'Days must be between 1 and 366.' });
   const plan = paidPlanOr(req.body?.plan);
-  if (!email) return res.status(400).json({ error: 'email required' });
-  await store.activate(email, days, plan);
-  sendMail(email, 'Your TradingAnalysis subscription is active', `Thanks for your payment — your ${PLANS[plan].label} access is now active for ${days} days. You can view your insights any time you're logged in.`);
-  res.json({ ok: true, plan });
+  // Renewing early shouldn't cost the user the days they already paid for:
+  // add whatever is left on a still-active subscription to the new period.
+  const now = Date.now();
+  const remainingDays = (sub.status === 'active' && sub.expires_at && new Date(sub.expires_at).getTime() > now)
+    ? Math.ceil((new Date(sub.expires_at).getTime() - now) / 86400000) : 0;
+  await store.activate(sub.email, days + remainingDays, plan);
+  sendMail(sub.email, 'Your TradingAnalysis subscription is active', `Thanks for your payment — your ${PLANS[plan].label} access is now active for ${days + remainingDays} days. You can view your insights any time you're logged in.`);
+  const fresh = await store.getSubscriber(sub.email);
+  res.json({ ok: true, plan, daysAdded: days, carriedOverDays: remainingDays, subscriber: publicSubscriber(fresh) });
 });
 
 app.post('/api/admin/deactivate', requireAdmin, async (req, res) => {
-  const email = String(req.body?.email || '').trim().toLowerCase();
-  if (!email) return res.status(400).json({ error: 'email required' });
-  await store.deactivate(email);
+  const sub = await findSubscriberByIdentifier(req.body?.user || req.body?.email);
+  if (!sub) return res.status(404).json({ error: 'No account found for that email/username.' });
+  await store.deactivate(sub.email);
   res.json({ ok: true });
 });
 
@@ -1325,8 +1366,8 @@ async function checkExpiries() {
 // Deliberately terse — this never describes what's actually gated behind
 // ADMIN_KEY, on the off chance server logs are ever exposed somewhere they
 // shouldn't be.
-if (!DEMO_MODE && ADMIN_KEY === 'change-me-admin-key') {
-  console.warn('[config] Set a real ADMIN_KEY env var.');
+if (!DEMO_MODE && !ADMIN_KEY_USABLE) {
+  console.warn('[config] No strong ADMIN_KEY set — key-based admin is disabled; use the in-app Admin tab.');
 }
 
 store.init()
