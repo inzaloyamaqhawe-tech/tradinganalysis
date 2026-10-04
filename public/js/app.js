@@ -1173,12 +1173,11 @@ async function loadChartData(key) {
     updateSidePanel(key, data);
     resizeCanvases();
 
-    const isLiveCapable = !!(BINANCE_SYMBOL[key] && BINANCE_KLINE_INTERVAL[currentTimeframe]);
-    const liveTag = isLiveCapable ? ' 🔴 live candle' : '';
-    const rangeTxt = data.high != null
-      ? `Range (${currentTimeframe}, tracked window): ${data.low} – ${data.high}${liveTag}`
+    chartLiveCapable = !!(BINANCE_SYMBOL[key] && BINANCE_KLINE_INTERVAL[currentTimeframe]) && data.high != null;
+    chartRangeText = data.high != null
+      ? `Range (${currentTimeframe}, tracked window): ${data.low} – ${data.high}`
       : `No candles yet at ${currentTimeframe} — try 1h, or add a Twelve Data key for full FX timeframe coverage.`;
-    document.getElementById('chartSub').textContent = rangeTxt;
+    renderChartSub();
 
     // proTools gates the chart-tool layer (EMA overlays, pattern overlays,
     // drawing tools); premium (checked separately in updateSidePanel) gates
@@ -1213,6 +1212,23 @@ async function loadChartData(key) {
 // so those charts stay on the periodic /api/history refresh as before.
 const BINANCE_KLINE_INTERVAL = { '1m': '1m', '5m': '5m', '15m': '15m', '30m': '30m', '1h': '1h', '4h': '4h', '1D': '1d', '1W': '1w', '1M': '1M' };
 let chartKlineWs = null;
+let chartLiveCapable = false;
+let chartRangeText = '';
+
+// The live-candle tag shows the currently forming candle's real direction
+// (green ▲ when close >= open, red ▼ when below) and is re-rendered on every
+// tick — it used to be a fixed 🔴 "recording" emoji that read as a red
+// candle even while the candle was green.
+function renderChartSub() {
+  const sub = document.getElementById('chartSub');
+  const last = chartState?.candles?.[chartState.candles.length - 1];
+  let tag = '';
+  if (chartLiveCapable && last) {
+    const up = last.close >= last.open;
+    tag = ` &nbsp;<span style="color:${up ? '#2fd480' : '#ff5d6c'}; font-weight:700;">● Live candle ${up ? '▲ up' : '▼ down'}</span>`;
+  }
+  sub.innerHTML = escapeHtml(chartRangeText) + tag;
+}
 
 function disconnectChartLive() {
   if (chartKlineWs) { try { chartKlineWs.close(); } catch (e) {} chartKlineWs = null; }
@@ -1245,6 +1261,7 @@ function connectChartLive(key, timeframe) {
       }
       chartState.closes = candles.map(c => c.close);
       renderChart();
+      renderChartSub();
     } catch (e) { /* one bad frame shouldn't kill the live edge */ }
   });
   chartKlineWs.addEventListener('error', () => { try { chartKlineWs.close(); } catch (e) {} });
