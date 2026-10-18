@@ -270,10 +270,18 @@ function drawLineChart(canvas, points, color) {
   });
 }
 
+let dashboardChartsLoading = false;
 async function loadDashboardCharts() {
+  if (dashboardChartsLoading || document.hidden || !document.querySelector('.view[data-view="dashboard"]').classList.contains('active')) return;
+  dashboardChartsLoading = true;
+  const status = document.getElementById('dashboardUpdated');
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15000);
   try {
-    const res = await fetch('/api/dashboard-stats');
+    const res = await fetch('/api/dashboard-stats', { cache: 'no-store', signal: controller.signal });
+    if (!res.ok) throw new Error('Dashboard data unavailable.');
     const data = await res.json();
+    if (!document.querySelector('.view[data-view="dashboard"]').classList.contains('active')) return;
     const barEmpty = document.getElementById('dashBarEmpty');
     if (!data.topAssets?.length) {
       barEmpty.style.display = 'block';
@@ -285,8 +293,13 @@ async function loadDashboardCharts() {
     }
     drawLineChart(document.getElementById('dashSellChart'), data.weekly.sell, '#ff5d6c');
     drawLineChart(document.getElementById('dashBuyChart'), data.weekly.buy, '#2fd480');
-  } catch (e) { /* charts just stay blank on a network blip — non-critical */ }
+    status.textContent = `Updated ${new Date(data.updatedAt || Date.now()).toLocaleString()}`;
+  } catch (e) {
+    status.textContent = 'Update failed. Showing the last available results.';
+  } finally { clearTimeout(timeout); dashboardChartsLoading = false; }
 }
+document.addEventListener('visibilitychange', () => { if (!document.hidden) loadDashboardCharts(); });
+window.addEventListener('focus', () => loadDashboardCharts());
 
 // ---------- Notifications ----------
 const NOTIF_ICON = { new_signal: 'S', level_touch: 'T', bot_signal: 'X', subscription: 'A' };
@@ -679,6 +692,8 @@ function renderMarketTable() {
 marketSearchInput.addEventListener('input', () => { marketPage = 1; renderMarketTable(); });
 
 async function loadPrices() {
+  // Reuse the existing refresh cycle; no extra polling timer is needed.
+  loadDashboardCharts();
   try {
     const res = await fetch('/api/prices');
     const data = await res.json();

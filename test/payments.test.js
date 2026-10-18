@@ -78,6 +78,19 @@ test('private proof lifecycle, approval, renewal and subscription notifications'
     assert.equal((await review('reject', fourth)).status, 200);
     assert.equal((await billing.getProof(second.email)).status, 'rejected');
     assert.equal((await review('approve', fourth)).status, 409);
+    const win = await store.logSignal({ instrument: 'BTC_USDT', side: 'BUY', created_at: '2026-10-12T12:00:00.000Z' });
+    const beforeClose = await (await api('/api/dashboard-stats')).json();
+    assert.equal(beforeClose.weekly.buy[0].winRate, null);
+    await store.updateSignalOutcome(win.id, { status: 'closed', outcome: 'TP1' });
+    const afterCloseResponse = await api('/api/dashboard-stats');
+    assert.equal(afterCloseResponse.headers.get('cache-control'), 'no-store');
+    const afterClose = await afterCloseResponse.json();
+    assert.equal(afterClose.weekly.buy[0].winRate, 100);
+    const loss = await store.logSignal({ instrument: 'BTC_USDT', side: 'BUY', created_at: '2026-10-12T14:00:00.000Z' });
+    await store.updateSignalOutcome(loss.id, { status: 'closed', outcome: 'SL' });
+    const latest = await (await api('/api/dashboard-stats')).json();
+    assert.equal(latest.weekly.buy[0].winRate, 50);
+    assert.ok(Number.isFinite(new Date(latest.updatedAt).getTime()));
   } finally {
     await new Promise(resolve => server.close(resolve));
     // The demo account store saves with a short debounce.

@@ -1206,7 +1206,8 @@ app.get('/api/performance', async (req, res) => {
 // no special-casing needed) + the two weekly buy/sell trend lines. Public,
 // same "aggregate stats are the credibility number" precedent as
 // /api/performance's own stats — no per-market entry/SL/TP leaks here.
-app.get('/api/dashboard-stats', async (req, res) => {
+app.get('/api/dashboard-stats', guarded(async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
   const rows = await store.listSignals(1000);
   const stats = computePerformanceStats(rows);
   const topAssets = Object.entries(stats.byInstrument)
@@ -1214,8 +1215,8 @@ app.get('/api/dashboard-stats', async (req, res) => {
     .sort((a, b) => (b.winRate ?? -1) - (a.winRate ?? -1))
     .slice(0, 6);
   const weekly = computeWeekdayWinRates(rows);
-  res.json({ stats, topAssets, weekly });
-});
+  res.json({ stats, topAssets, weekly, updatedAt: new Date().toISOString() });
+}));
 
 // Chart data for a single market: closes for everyone; EMA overlays +
 // regime/strategy only for an active subscriber (checked by email).
