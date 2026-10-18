@@ -35,7 +35,8 @@
 
 <main class="shell">
   <h1>Admin</h1>
-  <p class="section-sub">Business overview + subscriber activation. Activate a subscriber after you've confirmed their PayPal payment.</p>
+  <p class="section-sub">Confirm the bank transfer before approving a payment or activating a subscription.</p>
+  <p id="paymentAlert" class="payment-alert" role="status" hidden></p>
 
   <div class="panel">
     <div class="row">
@@ -65,11 +66,12 @@
       <input type="text" id="searchQ" placeholder="Search subscribers by email…" />
       <button id="searchBtn">Search</button>
       <button class="ghost" id="clearSearchBtn">Clear</button>
+      <select id="paymentFilter" aria-label="Payment status"><option value="all">All payments</option><option value="pending">Awaiting approval</option><option value="approved">Approved</option><option value="rejected">Rejected</option><option value="none">No proof</option></select>
     </div>
-    <table>
-      <thead><tr><th>Email</th><th>Status</th><th>Plan</th><th>Expires</th><th>Action</th></tr></thead>
+    <div style="overflow-x:auto;"><table>
+      <thead><tr><th>User / reference</th><th>Name and surname</th><th>Email</th><th>Status</th><th>Plan</th><th>Expires</th><th>Payment status</th><th>Latest proof</th><th>Action</th></tr></thead>
       <tbody id="rows"></tbody>
-    </table>
+    </table></div>
   </div>
 
   <div class="panel">
@@ -85,6 +87,8 @@
 
 <script>
   const keyInput = document.getElementById('adminKey');
+  const safe = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
+  let subscriberRows = [];
   keyInput.value = localStorage.getItem('ta_admin_key') || '';
 
   async function api(path, opts = {}) {
@@ -118,22 +122,33 @@
 
   async function load() {
     await loadStats();
-    const q = document.getElementById('searchQ').value.trim();
-    const data = await api(`/api/admin/subscribers${q ? `?q=${encodeURIComponent(q)}` : ''}`);
+    const data = await api('/api/admin/subscribers');
     const rows = document.getElementById('rows');
     if (!data.subscribers) { rows.innerHTML = `<tr><td colspan="5">${data.error || 'error'}</td></tr>`; return; }
-    rows.innerHTML = data.subscribers.map(s => `
+    subscriberRows = data.subscribers;
+    announcePendingPayments(subscriberRows);
+    renderSubscribers();
+  }
+  function renderSubscribers() {
+    const rows = document.getElementById('rows');
+    const q = document.getElementById('searchQ').value.trim().toLowerCase();
+    const status = document.getElementById('paymentFilter').value;
+    rows.innerHTML = subscriberRows.filter(s => (status === 'all' || (s.payment?.status || 'none') === status) && [s.email, s.username, s.firstName, s.lastName].some(v => String(v || '').toLowerCase().includes(q))).map(s => `
       <tr>
-        <td>${s.email}</td>
-        <td class="status-${s.status}">${s.status}</td>
-        <td>${s.plan || '—'}</td>
+        <td>${safe(s.username)}</td><td>${safe([s.firstName, s.lastName].filter(Boolean).join(' '))}</td>
+        <td>${safe(s.email)}</td>
+        <td>${safe(s.status)}</td>
+        <td>${safe(s.plan || 'Free')}</td>
         <td>${s.expiresAt ? new Date(s.expiresAt).toLocaleDateString() : '—'}</td>
+        <td>${s.payment ? safe(paymentLabels[s.payment.status]) : 'No proof'}${s.payment ? `<div>${safe(s.payment.plan)}</div>` : ''}</td>
+        <td>${s.payment ? `<button class="payment-download" data-email="${safe(s.email)}" data-version="${safe(s.payment.version)}">Download proof</button><div>${new Date(s.payment.uploadedAt).toLocaleString()}</div><div>${safe(s.payment.reference)}</div>` : 'No proof uploaded'}</td>
         <td>
-          <button data-email="${s.email}" class="act">Activate 30d</button>
-          <button data-email="${s.email}" class="danger deact">Deactivate</button>
+          ${s.payment?.status === 'pending' ? `<button class="payment-approve" data-email="${safe(s.email)}" data-version="${safe(s.payment.version)}">Approve payment</button><button class="payment-reject" data-email="${safe(s.email)}" data-version="${safe(s.payment.version)}">Reject</button>` : `<button data-email="${safe(s.email)}" class="act">Activate 30d</button>`}
+          <button data-email="${safe(s.email)}" class="danger deact">Deactivate</button>
         </td>
       </tr>
     `).join('');
+    bindPaymentActions(rows);
     document.querySelectorAll('.act').forEach(b => b.addEventListener('click', () => activate(b.dataset.email, 30, document.getElementById('quickPlan').value)));
     document.querySelectorAll('.deact').forEach(b => b.addEventListener('click', () => deactivate(b.dataset.email)));
   }
@@ -143,6 +158,8 @@
 
   document.getElementById('loadBtn').addEventListener('click', load);
   document.getElementById('searchBtn').addEventListener('click', load);
+  document.getElementById('searchQ').addEventListener('input', renderSubscribers);
+  document.getElementById('paymentFilter').addEventListener('change', renderSubscribers);
   document.getElementById('clearSearchBtn').addEventListener('click', () => { document.getElementById('searchQ').value = ''; load(); });
   document.getElementById('activateBtn').addEventListener('click', () => {
     const email = document.getElementById('quickEmail').value.trim();
@@ -151,5 +168,6 @@
     if (email) activate(email, days, plan);
   });
 </script>
+<script src="js/payments.js"></script>
 </body>
 </html>

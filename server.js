@@ -8,10 +8,15 @@ const twelveData = require('./twelvedata');
 const { detectPatterns } = require('./patterns');
 const { PLANS, RANK, planOf, atLeast } = require('./plans');
 const ai = require('./ai');
+const { createBilling, BANK, MAX_PROOF_BYTES } = require('./billing');
 
 const app = express();
 app.use(cors());
 app.use(express.json());
+app.use(['/api/payments', '/api/admin', '/api/notifications'], (req, res, next) => {
+  res.setHeader('Cache-Control', 'no-store');
+  next();
+});
 // We redeploy often during active development — always revalidate static
 // assets instead of letting browsers cache a stale index.html/app.js
 // indefinitely (that class of bug looks exactly like a server-side bug from
@@ -57,6 +62,7 @@ const DEMO_MODE = !HAS_MYSQL && !process.env.DATABASE_URL;
 // priority when configured; Postgres if DATABASE_URL is set instead;
 // otherwise in-memory demo mode with no real payments required. ----
 let store;
+let billingPool;
 if (HAS_MYSQL) {
   const mysql = require('mysql2/promise');
   const pool = mysql.createPool({
@@ -89,6 +95,7 @@ if (HAS_MYSQL) {
   // here on, with no need to touch every individual INSERT.
   pool.on('connection', (connection) => { connection.query("SET time_zone = '+00:00'"); });
   store = createMysqlStorage(pool);
+  billingPool = pool;
 } else if (DEMO_MODE) {
   console.log('[demo mode] no DB_HOST/DATABASE_URL set — using in-memory storage, no real payments required.');
   store = createMemoryStorage();
@@ -96,6 +103,13 @@ if (HAS_MYSQL) {
   const { Pool } = require('pg');
   const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
   store = createPgStorage(pool);
+  billingPool = pool;
+}
+const billing = createBilling({ pool: billingPool, mode: store.mode, store });
+const guarded = handler => (req, res, next) => Promise.resolve(handler(req, res)).catch(next);
+function requireSession(req, res, next) {
+  if (!req.authEmail) return res.status(401).json({ error: 'Please log in first.' });
+  next();
 }
 
 // ---- Instruments ----
@@ -961,6 +975,7 @@ app.post('/api/subscribe', async (req, res) => {
   }
   await store.upsertPending(email);
   const price = priceLabelFor(plan);
+  const sub = await store.getSubscriber(email);
   const link = payLinkFor(plan);
   // PayFast/Payflex are pending verification, so activation is manual:
   // never promise instant access until a real payment webhook exists.
@@ -970,11 +985,39 @@ app.post('/api/subscribe', async (req, res) => {
     plan,
     payLink: link,
     price,
-    instructions: DEMO_MODE
-      ? `Demo mode: no real charge. Click "Simulate Payment" below to test what a ${PLANS[plan].label} subscriber sees.`
-      : `PayFast and Payflex are currently pending verification, so subscriptions are activated manually after payment confirmation. Pay ${price} using the link below, then email your proof of payment or payment reference to ${PAYMENT_CONTACT_EMAIL}, quoting your account email (${email}) and the plan (${PLANS[plan].label}). Your plan is activated once the payment is verified.`,
+    bank: BANK,
+    reference: sub?.username || '',
+    instructions: `Transfer ${price} to the Capitec account shown, using your username as the reference. Upload your proof of payment for admin verification.`,
   });
 });
+
+app.get('/api/payments/latest', requireSession, guarded(async (req, res) => {
+  const sub = await store.getSubscriber(req.authEmail);
+  res.json({ bank: BANK, reference: sub?.username || '', proof: billing.metadata(await billing.getProof(req.authEmail)) });
+}));
+app.post('/api/payments/proof', requireSession, express.raw({ type: 'application/octet-stream', limit: MAX_PROOF_BYTES }), guarded(async (req, res) => {
+  const sub = await store.getSubscriber(req.authEmail);
+  if (!sub?.username || !sub.first_name || !sub.last_name) return res.status(400).json({ error: 'Your account needs a username, first name and surname. Please contact support to complete your profile.' });
+  if (!PAID_PLANS.includes(req.query.plan)) return res.status(400).json({ error: 'Choose a subscription package.' });
+  try { res.json({ ok: true, proof: await billing.upload(sub, req.query.plan, req.body) }); }
+  catch (e) { if (e.message.startsWith('Upload a')) return res.status(400).json({ error: e.message }); throw e; }
+}));
+app.get('/api/admin/payments', requireAdmin, guarded(async (req, res) => {
+  res.json({ payments: await billing.listProofs() });
+}));
+app.get('/api/admin/payments/proof', requireAdmin, guarded(async (req, res) => {
+  const proof = await billing.getProof(String(req.query.email || ''));
+  if (!proof) return res.status(404).json({ error: 'No proof on file.' });
+  if (req.query.version !== proof.version) return res.status(409).json({ error: 'Proof replaced. Refresh the table.' });
+  res.set({ 'Content-Type': proof.mime, 'Content-Disposition': `attachment; filename="${proof.filename}"`, 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
+  res.send(Buffer.from(proof.data, 'base64'));
+}));
+for (const action of ['approve', 'reject']) {
+  app.post(`/api/admin/payments/${action}`, requireAdmin, guarded(async (req, res) => {
+    try { res.json({ ok: true, result: await billing[action](String(req.body?.email || ''), req.body?.version) }); }
+    catch (e) { if (e.message.includes('proof')) return res.status(409).json({ error: e.message }); throw e; }
+  }));
+}
 
 // Demo-only: instantly activates a subscriber with no real payment, so the
 // flow can be tested end-to-end before real payments/DB are wired in.
@@ -1089,46 +1132,48 @@ app.post('/api/favourites', async (req, res) => {
 // here already uses): every "strong signal generated" event, whether the
 // system's own engine fired one or the professional bot posted an XAU
 // call, in one feed.
-app.get('/api/notifications', async (req, res) => {
+app.get('/api/notifications', guarded(async (req, res) => {
   const email = req.authEmail || ''; // session only — never trust an email from the request (impersonation)
   if (!email) return res.status(401).json({ error: 'Please log in first.' });
   const sub = await store.getSubscriber(email);
   const plan = planOf(sub);
-  if (!atLeast(plan, 'pro')) return res.status(402).json({ locked: true, message: 'Notifications are a Pro Trader Tools feature.' });
   // Dashboard shows the most recent 20 by default; "see more" pages in
   // further batches via offset instead of ever fetching the whole backlog.
   const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 20));
   const offset = Math.max(0, parseInt(req.query.offset, 10) || 0);
-  const notifications = await store.listNotifications(email, plan, limit, offset);
+  const personal = await billing.notifications(email);
+  const insights = atLeast(plan, 'pro') ? await store.listNotifications(email, plan, limit + offset, 0) : [];
+  const notifications = [...personal, ...insights].sort((a, b) => new Date(b.created_at) - new Date(a.created_at)).slice(offset, offset + limit);
   res.json({ notifications, limit, offset });
-});
+}));
 
-app.post('/api/notifications/:id/read', async (req, res) => {
+app.post('/api/notifications/:id/read', guarded(async (req, res) => {
   const email = req.authEmail || ''; // session only — never trust an email from the request (impersonation)
   if (!email) return res.status(401).json({ error: 'Please log in first.' });
-  await store.markNotificationRead(email, Number(req.params.id));
+  if (req.params.id.startsWith('event:')) await billing.markRead(email, req.params.id);
+  else await store.markNotificationRead(email, Number(req.params.id));
   res.json({ ok: true });
-});
+}));
 
-app.post('/api/notifications/mark-all-read', async (req, res) => {
+app.post('/api/notifications/mark-all-read', guarded(async (req, res) => {
   const email = req.authEmail || ''; // session only — never trust an email from the request (impersonation)
   if (!email) return res.status(401).json({ error: 'Please log in first.' });
   const sub = await store.getSubscriber(email);
   const plan = planOf(sub);
-  if (!atLeast(plan, 'pro')) return res.status(402).json({ locked: true, message: 'Notifications are a Pro Trader Tools feature.' });
-  await store.markAllNotificationsRead(email, plan);
+  await billing.markRead(email);
+  if (atLeast(plan, 'pro')) await store.markAllNotificationsRead(email, plan);
   res.json({ ok: true });
-});
+}));
 
-app.get('/api/notifications/unread-count', async (req, res) => {
+app.get('/api/notifications/unread-count', guarded(async (req, res) => {
   const email = req.authEmail || ''; // session only — never trust an email from the request (impersonation)
   if (!email) return res.json({ count: 0 });
   const sub = await store.getSubscriber(email);
   const plan = planOf(sub);
-  if (!atLeast(plan, 'pro')) return res.json({ count: 0 });
-  const count = await store.countUnreadNotifications(email, plan);
-  res.json({ count });
-});
+  const personal = await billing.notifications(email);
+  const count = personal.filter(n => !n.read).length + (atLeast(plan, 'pro') ? await store.countUnreadNotifications(email, plan) : 0);
+  res.json({ count, subscription: { status: sub?.status || 'pending', plan, expiresAt: sub?.expires_at || null, active: !!(sub?.status === 'active' && sub.expires_at && new Date(sub.expires_at) > new Date()) } });
+}));
 
 // Track record — public, on purpose: showing losses alongside wins is what
 // makes the accuracy claim credible instead of marketing copy. BUT an
@@ -1262,15 +1307,16 @@ async function findSubscriberByIdentifier(identifier) {
   return isValidEmail(id) ? store.getSubscriber(id.toLowerCase()) : store.getSubscriberByUsername(id);
 }
 
-app.get('/api/admin/subscribers', requireAdmin, async (req, res) => {
+app.get('/api/admin/subscribers', requireAdmin, guarded(async (req, res) => {
   const q = String(req.query.q || '').trim().toLowerCase();
   let subs = await store.listSubscribers();
   if (q) {
     subs = subs.filter(s => [s.email, s.username, s.first_name, s.last_name]
       .some(v => v && String(v).toLowerCase().includes(q)));
   }
-  res.json({ subscribers: subs.map(publicSubscriber) });
-});
+  const proofs = new Map((await billing.listProofs()).map(p => [p.email, p]));
+  res.json({ subscribers: subs.map(s => ({ ...publicSubscriber(s), payment: proofs.get(s.email) || null })) });
+}));
 
 app.get('/api/admin/stats', requireAdmin, async (req, res) => {
   const subs = await store.listSubscribers();
@@ -1280,7 +1326,9 @@ app.get('/api/admin/stats', requireAdmin, async (req, res) => {
   const pending = subs.filter(s => s.status === 'pending');
   const inactive = subs.filter(s => s.status === 'inactive');
 
-  const estimatedMRR = active.reduce((sum, s) => sum + (PLANS[s.plan]?.price ?? PLANS.premium.price), 0);
+  const estimatedMRR = active
+    .filter(s => !s.is_admin && s.role !== 'admin')
+    .reduce((sum, s) => sum + (PLANS[s.plan]?.price ?? PLANS.premium.price), 0);
   const byPlan = {};
   for (const s of active) {
     const p = s.plan || 'premium';
@@ -1306,7 +1354,7 @@ app.get('/api/admin/stats', requireAdmin, async (req, res) => {
     revenue: {
       priceLabel: PRICE_MONTHLY,
       estimatedMRR: Math.round(estimatedMRR * 100) / 100,
-      note: 'Estimate = sum of each active subscriber\'s plan price. No real payment records are tracked yet (manual activation until a payment gateway is wired in).',
+      note: 'Estimate = sum of active non-admin subscribers\' plan prices. Admin subscriptions are excluded. This is not a total of verified bank receipts.',
     },
     signals: perf,
     marketPerformance: Object.entries(perf.byInstrument).map(([key, s]) => ({
@@ -1330,6 +1378,7 @@ app.post('/api/admin/activate', requireAdmin, async (req, res) => {
   await store.activate(sub.email, days + remainingDays, plan);
   sendMail(sub.email, 'Your TradingAnalysis subscription is active', `Thanks for your payment — your ${PLANS[plan].label} access is now active for ${days + remainingDays} days. You can view your insights any time you're logged in.`);
   const fresh = await store.getSubscriber(sub.email);
+  await billing.notify(sub.email, 'Your subscription is active', `Your ${PLANS[plan].label} subscription is active. Expiry: ${new Date(fresh.expires_at).toISOString()}.`, `manual-activation:${sub.email}:${new Date(fresh.expires_at).toISOString()}`);
   res.json({ ok: true, plan, daysAdded: days, carriedOverDays: remainingDays, subscriber: publicSubscriber(fresh) });
 });
 
@@ -1350,14 +1399,18 @@ async function checkExpiries() {
   const now = Date.now();
   for (const s of subs) {
     if (s.status !== 'active' || !s.expires_at) continue;
+    if (s.is_admin || s.role === 'admin') continue;
     const msLeft = new Date(s.expires_at).getTime() - now;
     const daysLeft = msLeft / (24 * 60 * 60 * 1000);
+    const expiry = new Date(s.expires_at).toISOString();
+    if (daysLeft <= 3 && daysLeft > 0) await billing.notify(s.email, 'Your subscription expires soon', `Your subscription expires on ${expiry}. Renew using your username as the payment reference and upload your proof of payment.`, `expiry-warning:${s.email}:${expiry}`);
+    if (daysLeft <= 0) await billing.notify(s.email, 'Your subscription has expired', `Your subscription expired on ${expiry}. Your latest proof remains on file. Renew using your username as the payment reference.`, `expired:${s.email}:${expiry}`);
     if (daysLeft <= 3 && daysLeft > 0 && !warnedExpiring.has(s.email)) {
       warnedExpiring.add(s.email);
-      sendMail(s.email, 'Your TradingAnalysis subscription expires soon', `Your subscription expires in ${Math.ceil(daysLeft)} day(s) on ${new Date(s.expires_at).toLocaleDateString()}. Renew via PayPal.me/IYTechnologies to keep your access.`);
+      sendMail(s.email, 'Your TradingAnalysis subscription expires soon', `Your subscription expires in ${Math.ceil(daysLeft)} day(s) on ${new Date(s.expires_at).toLocaleDateString()}. Renew by bank transfer using your username as the reference, then upload proof on the Pricing page.`);
     } else if (daysLeft <= 0 && !notifiedExpired.has(s.email)) {
       notifiedExpired.add(s.email);
-      sendMail(s.email, 'Your TradingAnalysis access has expired', `Your subscription has expired. Renew any time via PayPal.me/IYTechnologies — your live dashboard stays free either way.`);
+      sendMail(s.email, 'Your TradingAnalysis access has expired', `Your subscription has expired. Renew by bank transfer using your username as the reference, then upload proof on the Pricing page.`);
     }
   }
 }
@@ -1370,15 +1423,23 @@ if (!DEMO_MODE && !ADMIN_KEY_USABLE) {
   console.warn('[config] No strong ADMIN_KEY set — key-based admin is disabled; use the in-app Admin tab.');
 }
 
-store.init()
+app.use((err, req, res, next) => {
+  if (res.headersSent) return next(err);
+  console.error('[request]', err.message);
+  res.status(err.type === 'entity.too.large' ? 413 : 500).json({ error: err.type === 'entity.too.large' ? 'Proof must be 2 MB or smaller.' : 'Request failed. Please try again.' });
+});
+
+if (require.main === module) store.init()
+  .then(() => billing.init())
   .then(() => pollAllAndStore())
   .then(() => {
     setInterval(pollAllAndStore, 10 * 60 * 1000); // every 10 minutes
-    checkExpiries();
-    setInterval(checkExpiries, 24 * 60 * 60 * 1000); // once a day
+    checkExpiries().catch(e => console.error('[expiry]', e.message));
+    setInterval(() => checkExpiries().catch(e => console.error('[expiry]', e.message)), 60 * 60 * 1000);
     app.listen(PORT, () => console.log(`tradinganalysis listening on ${PORT}`));
   })
   .catch(err => {
     console.error('Failed to start:', err);
     process.exit(1);
   });
+module.exports = { app, store, billing, checkExpiries };

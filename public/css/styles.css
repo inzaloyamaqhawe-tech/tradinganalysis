@@ -579,3 +579,18 @@ button.ghost.fav-star { color: var(--gold); }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; transition-duration: 0.001ms !important; }
 }
+:root { --payment-alert: #f2b84b; }
+.payment-section { border-top: 1px solid var(--border); padding-block: 24px; margin-top: 24px; }
+.payment-section h2 { font-size: 1.25rem; letter-spacing: 0; }
+.bank-details { display: grid; grid-template-columns: minmax(120px, 180px) minmax(0, 1fr); max-width: 640px; gap: 10px 16px; }
+.bank-details dt { color: var(--muted); }
+.bank-details dd { margin: 0; overflow-wrap: anywhere; }
+#proofForm { display: grid; gap: 12px; max-width: 520px; }
+#proofForm[hidden], .payment-alert[hidden] { display: none; }
+#proofForm input, #proofForm select { width: 100%; min-width: 0; box-sizing: border-box; }
+.payment-alert { border-left: 4px solid var(--payment-alert); padding: 12px; background: #f2b84b18; }
+.admin-table td { overflow-wrap: anywhere; }
+.admin-table td:nth-child(2) { min-width: 175px; }
+#adminPaymentBadge { margin-left: 6px; color: var(--payment-alert); }
+.admin-table button { margin-block: 3px; }
+@media (max-width: 480px) { .bank-details { grid-template-columns: 1fr; gap: 4px; } .bank-details dd { margin-bottom: 10px; } }

@@ -1,5 +1,29 @@
 # TradingAnalysis GPT Analysis
 
+## Current Payment Workflow (2026-10-18)
+
+This section supersedes older payment proposals below.
+
+1. The signed-in user selects a package on Pricing. Bank details are Capitec Bank, Inzalo Yamaqhawe Technologies, account 2542120109, Entrepreneur, branch 470010.
+2. The payment reference is the user's **username**. Email, first name and surname come from their account. No ID number is collected.
+3. The user selects the paid package and uploads a PDF, PNG or JPEG, maximum 2 MB, using "I've paid, submit proof".
+4. Uploading creates an "Awaiting approval" record without activating access. A successful new upload replaces the previous document; an invalid or failed upload does not remove the last stored file. The latest successfully uploaded proof remains after subscription expiry, even if admin rejects it.
+5. Admin uses the existing Users table, with live search and subscription/payment filters. Payment columns show package, status, upload timestamp, reference and an authenticated download button. Pending proofs have Approve payment and Reject actions.
+6. After matching the proof to the bank statement, Approve payment activates the uploaded package for 30 days, carrying over remaining active time. A proof version can be approved only once. Replacing it invalidates the old review/download link.
+7. The user receives a private in-app activation notification with the expiry timestamp. Rejected proofs also generate a private account notification.
+8. While the server runs, hourly checks create one renewal reminder per expiry when the subscription enters its final 72 hours, and an expiry notice after it lapses. These notices survive restarts and remain visible after paid access ends. A server outage can delay a reminder until the next running check.
+9. Admin sees a pending-payment badge, refreshed using the existing 60-second notification cycle. Optional sound requires enabling the payment-sound checkbox in the browser.
+10. Insight-email eligibility stays Pro and higher. Monthly revenue estimates exclude admins and are not bank-statement receipts.
+
+### Storage And Deployment
+
+- Existing MySQL/Postgres installations automatically create the private `billing_records` table at startup; the application DB user needs CREATE permission. Proof content and metadata stay in the same database as accounts, outside public web files. Approval, expiry update and account notification use one database transaction.
+- Each user has one current proof record. Account notification records are separate and contain no document copies. No ID number, passport information or residential address from the supplied bank PDF is stored.
+- Without a database, demo billing uses `.billing-data.json`, or `BILLING_DATA_FILE`, on disk. Like the existing demo accounts, this requires persistent disk to survive a fresh deployment. Use the database for production.
+- Uploads are checked for PDF/PNG/JPEG signatures and bounded to 2 MB; document contents still require admin verification against company statements.
+- Deploy the updated Node files and public assets, then restart the service. Existing provider webhooks remain unimplemented while registration verification is pending.
+- Run `npm.cmd test` for isolated payment API tests. Desktop/mobile upload, search, filter, download and approval flows were also checked locally with Playwright screenshots.
+
 ## Status (2026-10-02)
 
 - **Done — manual activation is live and clear.** The Pricing page and checkout instructions now say PayFast/Payflex are pending verification and that plans are activated manually after payment confirmation (proof of payment / reference to info@iytechnologies.co.za). No "instant activation" wording.

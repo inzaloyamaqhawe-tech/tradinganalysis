@@ -62,7 +62,7 @@
       <button class="mainnav-item" data-view="pricing">Pricing</button>
       <button class="mainnav-item" data-view="account">My Account</button>
       <button class="mainnav-item" data-view="risk">Risk Disclosure</button>
-      <button class="mainnav-item admin-nav" data-view="admin" id="adminNavItem" style="display:none;">Admin</button>
+      <button class="mainnav-item admin-nav" data-view="admin" id="adminNavItem" style="display:none;">Admin <span id="adminPaymentBadge" hidden></span></button>
     </nav>
     <div class="topbar-cta">
       <div class="user-menu" id="userMenu" style="display:none;">
@@ -255,9 +255,9 @@
   <!-- NOTIFICATIONS -->
   <section class="view" data-view="notifications">
     <h1>Notifications</h1>
-    <p class="section-sub">Every strong signal the system generates, and every professional XAU/USD call the moment it's posted. A Pro Trader Tools feature.</p>
+    <p class="section-sub">Your subscription updates and renewal reminders. Pro Trader Tools and higher also receive market insight alerts.</p>
     <div class="panel" id="notifLockedBox" style="display:none;">
-      <p>Subscribe to Pro Trader Tools or higher to get notified the instant a strong setup appears.</p>
+      <p>Log in to view your personal subscription notifications. Market insight alerts are available on Pro Trader Tools and higher.</p>
       <button id="notifPricingBtn">See Pricing</button>
     </div>
     <div class="row" id="notifPermissionRow" style="display:none; margin-bottom:14px; gap:10px; flex-wrap:wrap;">
@@ -298,6 +298,18 @@
 
     <div class="plan-grid" id="planGrid"></div>
     <div id="subResult" class="note" style="margin-top:14px;"></div>
+    <section id="paymentSection" class="payment-section" aria-labelledby="paymentHeading">
+      <h2 id="paymentHeading">Bank transfer</h2>
+      <div id="paymentBank"></div>
+      <form id="proofForm">
+        <label for="proofPlan">Package</label><select id="proofPlan" required></select>
+        <label for="proofFile">Proof of payment, PDF, PNG or JPEG, maximum 2 MB</label>
+        <input id="proofFile" type="file" accept="application/pdf,image/png,image/jpeg" required />
+        <button id="proofSubmit" type="submit">I've paid, submit proof</button>
+      </form>
+      <p id="proofMessage" role="status"></p>
+      <p id="latestProof" class="note"></p>
+    </section>
   </section>
 
   <!-- ACCOUNT -->
@@ -368,6 +380,7 @@
     <p class="section-sub">Manual plan activation while PayFast/Payflex are pending verification. Confirm the payment first, then activate the person's plan here.</p>
 
     <div class="hero-stats" id="adminStats" style="margin-bottom:8px;"></div>
+    <p id="paymentAlert" role="status" class="payment-alert" hidden></p>
 
     <div class="panel">
       <h3 class="section-title">Activate a plan</h3>
@@ -396,11 +409,17 @@
           <option value="all">All</option>
           <option value="notactive">Not active</option>
           <option value="active">Active</option>
+          <option value="payment-pending">Awaiting payment approval</option>
+          <option value="payment-approved">Payment approved</option>
+          <option value="payment-rejected">Payment rejected</option>
+          <option value="payment-none">No proof uploaded</option>
         </select>
+        <button id="refreshPayments" class="secondary">Refresh</button>
+        <label><input type="checkbox" id="paymentSound" /> Payment alert sound</label>
       </div>
       <div class="chart-wrap-table" style="overflow-x:auto;">
         <table class="track-table admin-table">
-          <thead><tr><th>User</th><th>Email</th><th>Plan</th><th>Status</th><th>Expires</th><th></th></tr></thead>
+          <thead><tr><th>User</th><th>Email</th><th>Plan</th><th>Status</th><th>Expires</th><th>Payment status</th><th>Latest proof</th><th></th></tr></thead>
           <tbody id="adminRows"><tr><td colspan="6" class="note">Loading…</td></tr></tbody>
         </table>
       </div>
@@ -544,5 +563,6 @@
 </div>
 
 <script src="js/app.js"></script>
+<script src="js/payments.js"></script>
 </body>
 </html>

@@ -98,10 +98,11 @@ function renderAdminRows() {
   const rows = adminUsers.filter(u => {
     if (filter === 'active' && !isActiveSub(u)) return false;
     if (filter === 'notactive' && isActiveSub(u)) return false;
+    if (filter.startsWith('payment-') && (u.payment?.status || 'none') !== filter.slice(8)) return false;
     if (!q) return true;
     return [u.email, u.username, u.firstName, u.lastName].some(v => v && v.toLowerCase().includes(q));
   });
-  if (!rows.length) { host.innerHTML = '<tr><td colspan="6" class="note">No matching users.</td></tr>'; return; }
+  if (!rows.length) { host.innerHTML = '<tr><td colspan="8" class="note">No matching users.</td></tr>'; return; }
   host.innerHTML = rows.map(u => {
     const active = isActiveSub(u);
     const name = [u.firstName, u.lastName].filter(Boolean).join(' ');
@@ -115,13 +116,17 @@ function renderAdminRows() {
       <td>${escapeHtml(u.email)}</td>
       <td>${escapeHtml(planLabel)}</td>
       <td>${statusPill}</td>
-      <td>${active ? new Date(u.expiresAt).toLocaleDateString() : '—'}</td>
+      <td>${u.expiresAt ? new Date(u.expiresAt).toLocaleString() : '—'}</td>
+      <td>${u.payment ? escapeHtml({ pending: 'Awaiting approval', approved: 'Approved', rejected: 'Rejected' }[u.payment.status]) : 'No proof'}${u.payment ? `<div class="note">${escapeHtml(PLANS?.[u.payment.plan]?.label || u.payment.plan)}</div>` : ''}</td>
+      <td>${u.payment ? `<button class="ghost payment-download" data-email="${escapeHtml(u.email)}" data-version="${escapeHtml(u.payment.version)}">Download proof</button><div class="note">${new Date(u.payment.uploadedAt).toLocaleString()}</div><div class="note">Reference: ${escapeHtml(u.payment.reference)}</div>` : 'No proof uploaded'}</td>
       <td style="white-space:nowrap;">
-        <button class="secondary admin-pick" data-user="${id}" style="padding:6px 12px; font-size:.8rem;">Activate…</button>
+        ${u.payment?.status === 'pending' ? `<button class="payment-approve" data-email="${escapeHtml(u.email)}" data-version="${escapeHtml(u.payment.version)}">Approve payment</button><button class="ghost payment-reject" data-email="${escapeHtml(u.email)}" data-version="${escapeHtml(u.payment.version)}">Reject</button>` : ''}
+        ${u.payment?.status !== 'pending' ? `<button class="secondary admin-pick" data-user="${id}" style="padding:6px 12px; font-size:.8rem;">Activate...</button>` : ''}
         ${active && !u.isAdmin ? `<button class="ghost admin-deact" data-user="${id}" style="color:var(--down);">Deactivate</button>` : ''}
       </td>
     </tr>`;
   }).join('');
+  if (typeof bindPaymentActions === 'function') bindPaymentActions(host);
   host.querySelectorAll('.admin-pick').forEach(b => b.addEventListener('click', () => {
     document.getElementById('adminUser').value = b.dataset.user;
     document.getElementById('adminUser').focus();
@@ -136,6 +141,7 @@ function renderAdminRows() {
 
 async function loadAdmin() {
   if (!currentUser?.isAdmin) return;
+  const adminEmail = currentUser.email;
   const planSel = document.getElementById('adminPlan');
   if (!planSel.options.length && PLANS) {
     planSel.innerHTML = Object.values(PLANS).filter(p => p.key !== 'free')
@@ -143,7 +149,9 @@ async function loadAdmin() {
   }
   try {
     const [{ subscribers }, stats] = await Promise.all([adminApi('/api/admin/subscribers'), adminApi('/api/admin/stats')]);
+    if (!currentUser?.isAdmin || currentUser.email !== adminEmail) return;
     adminUsers = subscribers;
+    if (typeof announcePendingPayments === 'function') announcePendingPayments(subscribers);
     const u = stats.users;
     document.getElementById('adminStats').innerHTML = `
       <div class="stat-chip"><div class="n">${u.total}</div><div class="l">Accounts</div></div>
@@ -152,7 +160,7 @@ async function loadAdmin() {
       <div class="stat-chip"><div class="n">R${stats.revenue.estimatedMRR}</div><div class="l">Est. monthly</div></div>`;
     renderAdminRows();
   } catch (e) {
-    document.getElementById('adminRows').innerHTML = `<tr><td colspan="6" class="note">${escapeHtml(e.message)}</td></tr>`;
+    document.getElementById('adminRows').innerHTML = `<tr><td colspan="8" class="note">${escapeHtml(e.message)}</td></tr>`;
   }
 }
 
@@ -281,7 +289,7 @@ async function loadDashboardCharts() {
 }
 
 // ---------- Notifications ----------
-const NOTIF_ICON = { new_signal: '📈', level_touch: '🎯', bot_signal: '🥇' };
+const NOTIF_ICON = { new_signal: 'S', level_touch: 'T', bot_signal: 'X', subscription: 'A' };
 const NOTIF_PAGE_SIZE = 20;
 let notifOffset = 0;
 let notifRows = [];
@@ -294,10 +302,10 @@ function renderNotifRows() {
   }
   listHost.innerHTML = notifRows.map(n => `
     <div class="notif-row ${n.read ? '' : 'unread'}" data-id="${n.id}">
-      <div class="notif-icon">${NOTIF_ICON[n.type] || '🔔'}</div>
+      <div class="notif-icon" aria-hidden="true">${NOTIF_ICON[n.type] || 'A'}</div>
       <div>
-        <div class="notif-title">${n.title}</div>
-        ${n.body ? `<div class="notif-body">${n.body.replace(/\n/g, '<br>')}</div>` : ''}
+        <div class="notif-title">${escapeHtml(n.title)}</div>
+        ${n.body ? `<div class="notif-body">${escapeHtml(n.body).replace(/\n/g, '<br>')}</div>` : ''}
         <div class="notif-time">${new Date(n.created_at).toLocaleString()}</div>
       </div>
     </div>
@@ -392,9 +400,22 @@ async function refreshNotifBadge() {
   try {
     const res = await fetch(`/api/notifications/unread-count?email=${encodeURIComponent(email)}`, { headers: authHeaders() });
     const data = await res.json();
+    if (currentUser?.email !== email) return;
+    if (data.subscription && ['status', 'plan', 'expiresAt', 'active'].some(key => currentUser[key] !== data.subscription[key])) {
+      Object.assign(currentUser, data.subscription);
+      updateAuthUI();
+    }
     if (data.count > 0) { badge.textContent = data.count > 99 ? '99+' : String(data.count); badge.style.display = 'inline-flex'; }
     else { badge.style.display = 'none'; }
+    if (location.hash === '#/notifications' && data.count > 0) await loadNotifications();
     await pushNewNotifications();
+    if (currentUser?.isAdmin && typeof announcePendingPayments === 'function') {
+      const data = await adminApi('/api/admin/subscribers');
+      if (!currentUser?.isAdmin || currentUser.email !== email) return;
+      adminUsers = data.subscribers;
+      announcePendingPayments(adminUsers);
+      if (location.hash === '#/admin') renderAdminRows();
+    }
   } catch (e) { /* badge just stays as-is on a network blip */ }
 }
 setInterval(refreshNotifBadge, 60000);
@@ -547,7 +568,10 @@ async function subscribeToPlan(plan) {
     });
     const data = await res.json();
     if (!res.ok) { subResult.textContent = data.error || 'Something went wrong.'; return; }
-    subResult.innerHTML = `${data.instructions}${data.demoMode ? '' : `<br><br><a href="${data.payLink}" target="_blank" rel="noopener">👉 Pay ${data.price} via PayPal</a>`}`;
+    subResult.textContent = `Selected: ${PLANS[plan]?.label || plan}, ${data.price}. Pay by bank transfer below, using your username as the reference, then upload your proof.`;
+    if (typeof loadPaymentDetails === 'function') await loadPaymentDetails();
+    document.getElementById('proofPlan').value = plan;
+    document.getElementById('paymentSection').scrollIntoView({ behavior: 'smooth', block: 'start' });
   } catch (e) {
     subResult.textContent = 'Network error — try again.';
   }
@@ -751,8 +775,6 @@ function knownEmail() { try { return localStorage.getItem('ta_email') || ''; } c
 // ---------- Real OS-level push notifications (not an in-tab badge you
 // have to be looking at — an actual desktop notification via the browser's
 // Notification API, so it shows up even if this tab isn't focused). ----------
-function getLastSeenNotifId() { try { return parseInt(localStorage.getItem('ta_last_notif_id') || '0', 10); } catch (e) { return 0; } }
-function setLastSeenNotifId(id) { try { localStorage.setItem('ta_last_notif_id', String(id)); } catch (e) {} }
 
 async function requestNotifPermission() {
   if (!('Notification' in window)) return false;
@@ -774,16 +796,18 @@ async function pushNewNotifications() {
     const data = await res.json();
     const list = data.notifications || [];
     if (!list.length) return;
-    const maxId = Math.max(...list.map(n => n.id));
-    const lastSeen = getLastSeenNotifId();
-    if (lastSeen === 0) { setLastSeenNotifId(maxId); return; }
-    list.filter(n => n.id > lastSeen).sort((a, b) => a.id - b.id).forEach(n => {
+    const seenKey = `ta_seen_notifications:${currentUser.email}`;
+    const saved = localStorage.getItem(seenKey);
+    const seen = new Set(saved ? JSON.parse(saved) : []);
+    const fresh = saved ? list.filter(n => !seen.has(String(n.id)) && !n.read) : [];
+    fresh.reverse().forEach(n => {
       try {
         const notif = new Notification(n.title, { body: n.body || '', icon: 'img/mark.png', tag: `ta-notif-${n.id}` });
         notif.onclick = () => { window.focus(); showView('notifications'); notif.close(); };
       } catch (e) { /* one bad notification shouldn't block the rest */ }
     });
-    setLastSeenNotifId(maxId);
+    for (const n of list) seen.add(String(n.id));
+    localStorage.setItem(seenKey, JSON.stringify([...seen].slice(-300)));
   } catch (e) { /* non-critical — next 60s check tries again */ }
 }
 
@@ -1321,9 +1345,12 @@ function updateAuthUI() {
     adminUsers = [];
     document.getElementById('adminRows').innerHTML = '';
     document.getElementById('adminStats').innerHTML = '';
+    document.getElementById('paymentAlert').hidden = true;
+    document.getElementById('adminPaymentBadge').hidden = true;
     if (window.location.hash === '#/admin') showView('dashboard');
   }
   if (!loggedIn) document.getElementById('gateAuthMsg').textContent = '';
+  if (typeof loadPaymentDetails === 'function') loadPaymentDetails();
   document.getElementById('authLoggedOut').style.display = loggedIn ? 'none' : 'block';
   document.getElementById('authLoggedIn').style.display = loggedIn ? 'block' : 'none';
   document.getElementById('userMenu').style.display = loggedIn ? 'inline-block' : 'none';

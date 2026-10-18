@@ -366,7 +366,7 @@ function createPgStorage(pool) {
     },
 
     async listSubscribers() {
-      const { rows } = await pool.query(`SELECT email, status, plan, expires_at, created_at FROM subscribers ORDER BY created_at DESC`);
+      const { rows } = await pool.query(`SELECT * FROM subscribers ORDER BY created_at DESC`);
       return rows;
     },
 
