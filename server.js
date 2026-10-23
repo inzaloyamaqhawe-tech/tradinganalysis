@@ -9,8 +9,10 @@ const { detectPatterns } = require('./patterns');
 const { PLANS, RANK, planOf, atLeast } = require('./plans');
 const ai = require('./ai');
 const { createBilling, BANK, MAX_PROOF_BYTES } = require('./billing');
+const { requestSessionToken, setSessionCookie, clearSessionCookie } = require('./session');
 
 const app = express();
+app.set('trust proxy', 1);
 app.use(cors());
 app.use(express.json());
 app.use(['/api/payments', '/api/admin', '/api/notifications'], (req, res, next) => {
@@ -106,7 +108,7 @@ if (HAS_MYSQL) {
   billingPool = pool;
 }
 const billing = createBilling({ pool: billingPool, mode: store.mode, store });
-const guarded = handler => (req, res, next) => Promise.resolve(handler(req, res)).catch(next);
+const guarded = handler => (req, res, next) => Promise.resolve(handler(req, res, next)).catch(next);
 function requireSession(req, res, next) {
   if (!req.authEmail) return res.status(401).json({ error: 'Please log in first.' });
   next();
@@ -855,14 +857,19 @@ function verifyPassword(password, stored) {
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
-// Resolves req.authEmail from a Bearer session token, if one was sent.
+// Browser cookies survive refreshes; bearer tokens remain supported for API clients.
 // Never blocks the request — routes that need auth check req.authEmail themselves.
-app.use(async (req, res, next) => {
-  const header = req.headers.authorization || '';
-  const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+app.use(guarded(async (req, res, next) => {
+  res.setHeader('Cache-Control', 'no-store');
+  const origin = req.get('origin');
+  if (origin && !['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
+    if (origin !== `${req.protocol}://${req.get('host')}`) return res.status(403).json({ error: 'Please make this request from TradingAnalysis.' });
+  }
+  const token = requestSessionToken(req);
+  req.authToken = token;
   req.authEmail = token ? await store.getSessionEmail(token) : null;
   next();
-});
+}));
 
 function isValidEmail(email) { return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email); }
 
@@ -890,6 +897,7 @@ app.post('/api/auth/signup', async (req, res) => {
   await applyAdminOverrideIfNeeded(email);
   const token = crypto.randomBytes(24).toString('hex');
   await store.createSession(token, email);
+  setSessionCookie(req, res, token);
   const sub = await store.getSubscriber(email);
   sendMail(email, 'Welcome to TradingAnalysis', `Hi ${firstName}, your account has been created. Live market data is free — subscribe any time for ${PRICE_MONTHLY} to unlock full insights.`);
   res.json({ ok: true, token, email, username: sub?.username, status: sub?.status || 'pending', plan: planOf(sub) });
@@ -908,19 +916,20 @@ app.post('/api/auth/login', async (req, res) => {
   await applyAdminOverrideIfNeeded(sub.email);
   const token = crypto.randomBytes(24).toString('hex');
   await store.createSession(token, sub.email);
+  setSessionCookie(req, res, token);
   const fresh = await store.getSubscriber(sub.email);
   res.json({ ok: true, token, email: sub.email, username: fresh?.username, status: fresh.status, plan: planOf(fresh) });
 });
 
 app.post('/api/auth/logout', async (req, res) => {
-  const header = req.headers.authorization || '';
-  const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+  const token = req.authToken;
   if (token) await store.deleteSession(token);
+  clearSessionCookie(req, res);
   res.json({ ok: true });
 });
 
 app.get('/api/auth/me', async (req, res) => {
-  if (!req.authEmail) return res.status(401).json({ error: 'Not logged in.' });
+  if (!req.authEmail) { clearSessionCookie(req, res); return res.status(401).json({ error: 'Not logged in.' }); }
   const sub = await store.getSubscriber(req.authEmail);
   const active = !!(sub && sub.status === 'active' && sub.expires_at && new Date(sub.expires_at) > new Date());
   res.json({
@@ -1167,7 +1176,7 @@ app.post('/api/notifications/mark-all-read', guarded(async (req, res) => {
 
 app.get('/api/notifications/unread-count', guarded(async (req, res) => {
   const email = req.authEmail || ''; // session only — never trust an email from the request (impersonation)
-  if (!email) return res.json({ count: 0 });
+  if (!email) return res.status(401).json({ error: 'Please log in first.', count: 0 });
   const sub = await store.getSubscriber(email);
   const plan = planOf(sub);
   const personal = await billing.notifications(email);

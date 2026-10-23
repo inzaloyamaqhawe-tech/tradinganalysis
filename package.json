@@ -8,7 +8,7 @@
   },
   "scripts": {
     "start": "node server.js",
-    "test": "node --test test/payments.test.js test/dashboard.test.js"
+    "test": "node --test test/payments.test.js test/dashboard.test.js test/sessions.test.js"
   },
   "dependencies": {
     "cors": "^2.8.5",

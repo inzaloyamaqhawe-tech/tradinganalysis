@@ -5,6 +5,7 @@
 const fs = require('fs');
 const path = require('path');
 const { atLeast } = require('./plans');
+const { SESSION_TTL_MS } = require('./session');
 
 // Kept generous so the multi-strategy engine (signals.js) has enough raw
 // samples to bucket into synthetic candles for instruments without a real
@@ -14,7 +15,7 @@ const HISTORY_LIMIT = 600;
 function createMemoryStorage() {
   const subscribers = new Map(); // email -> { email, status, plan, expires_at, created_at, password_hash, favourites }
   const history = new Map(); // instrument -> [{ price, polled_at }] most-recent-first
-  const sessions = new Map(); // token -> email
+  const sessions = new Map(); // token -> { email, createdAt }
   const signalLog = []; // { id, instrument, strategy, regime, side, entry, sl, tp1-4, confidence, status, outcome, best_level, created_at, closed_at, alerted_new, alerted_levels }
   let signalLogSeq = 1;
   const notifications = []; // { id, signal_id, type, min_plan, title, body, instrument, created_at }
@@ -46,7 +47,9 @@ function createMemoryStorage() {
       if (!fs.existsSync(DATA_FILE)) return;
       const data = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
       (data.subscribers || []).forEach(([k, v]) => subscribers.set(k, v));
-      (data.sessions || []).forEach(([k, v]) => sessions.set(k, v));
+      (data.sessions || []).forEach(([k, v]) => {
+        if (v && typeof v === 'object' && Number.isFinite(v.createdAt) && v.createdAt + SESSION_TTL_MS > Date.now()) sessions.set(k, v);
+      });
       (data.signalLog || []).forEach(row => signalLog.push(row));
       signalLogSeq = data.signalLogSeq || 1;
       (data.history || []).forEach(([k, v]) => history.set(k, v));
@@ -75,8 +78,13 @@ function createMemoryStorage() {
       scheduleSave();
     },
 
-    async createSession(token, email) { sessions.set(token, email); scheduleSave(); },
-    async getSessionEmail(token) { return sessions.get(token) || null; },
+    async createSession(token, email) { sessions.set(token, { email, createdAt: Date.now() }); scheduleSave(); },
+    async getSessionEmail(token) {
+      const session = sessions.get(token);
+      if (!session) return null;
+      if (session.createdAt + SESSION_TTL_MS <= Date.now()) { sessions.delete(token); scheduleSave(); return null; }
+      return session.email;
+    },
     async deleteSession(token) { sessions.delete(token); scheduleSave(); },
 
     async logSignal(rec) {
@@ -315,7 +323,7 @@ function createPgStorage(pool) {
       await pool.query(`INSERT INTO sessions (token, email) VALUES ($1, $2)`, [token, email]);
     },
     async getSessionEmail(token) {
-      const { rows } = await pool.query(`SELECT email FROM sessions WHERE token = $1`, [token]);
+      const { rows } = await pool.query(`SELECT email FROM sessions WHERE token = $1 AND created_at > $2`, [token, new Date(Date.now() - SESSION_TTL_MS)]);
       return rows[0]?.email || null;
     },
     async deleteSession(token) {
@@ -514,7 +522,7 @@ function createMysqlStorage(pool) {
     },
     async getSessionEmail(token) {
       const [rows] = await pool.execute(
-        `SELECT u.email FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token = ?`, [token]
+        `SELECT u.email FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token = ? AND s.created_at > ?`, [token, toMysqlDatetime(Date.now() - SESSION_TTL_MS)]
       );
       return rows[0]?.email || null;
     },

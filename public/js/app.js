@@ -407,11 +407,14 @@ document.getElementById('notifEnableBtn')?.addEventListener('click', async () =>
 });
 
 async function refreshNotifBadge() {
+  if (sessionRestoreNeedsRetry) { await refreshMe(); return; }
   const email = currentUser?.email; // session-only — see loadNotifications' note
   const badge = document.getElementById('notifBadge');
   if (!email) { badge.style.display = 'none'; return; }
   try {
     const res = await fetch(`/api/notifications/unread-count?email=${encodeURIComponent(email)}`, { headers: authHeaders() });
+    if (res.status === 401 && currentUser?.email === email) { clearToken(); updateAuthUI(); return; }
+    if (!res.ok) return;
     const data = await res.json();
     if (currentUser?.email !== email) return;
     if (data.subscription && ['status', 'plan', 'expiresAt', 'active'].some(key => currentUser[key] !== data.subscription[key])) {
@@ -1330,24 +1333,31 @@ chartModal.addEventListener('click', (e) => { if (e.target === chartModal) { cha
 document.getElementById('chartPricingLink')?.addEventListener('click', () => { chartModal.classList.remove('open'); disconnectChartLive(); });
 
 // ---------- Auth: one account, used everywhere instead of retyping email ----------
-// Deliberately NOT persisted anywhere (no localStorage/sessionStorage) —
-// per feedback, a page refresh must require logging in again, not silently
-// stay signed in.
+// The HttpOnly cookie restores the seven-hour session after refreshes.
+// The optional bearer token stays in memory for the current page only.
 let authToken = null;
 let currentUser = null; // { email, status, expiresAt, active }
+let sessionRestoreNeedsRetry = false;
+let authVersion = 0;
 
 function authHeaders() { return authToken ? { Authorization: `Bearer ${authToken}` } : {}; }
-function setToken(token) { authToken = token; }
-function clearToken() { authToken = null; currentUser = null; }
+function setToken(token) { authVersion++; authToken = token; sessionRestoreNeedsRetry = false; }
+function clearToken() { authVersion++; authToken = null; currentUser = null; sessionRestoreNeedsRetry = false; }
 
 async function refreshMe() {
-  if (!authToken) { currentUser = null; updateAuthUI(); return; }
+  const version = authVersion;
   try {
-    const res = await fetch('/api/auth/me', { headers: authHeaders() });
-    if (!res.ok) { clearToken(); } else { currentUser = await res.json(); currentFavourites = currentUser.favourites || []; }
-  } catch (e) { /* leave currentUser as-is on a network blip */ }
+    const res = await fetch('/api/auth/me', { headers: authHeaders(), cache: 'no-store', credentials: 'same-origin' });
+    if (version !== authVersion) return;
+    if (res.status === 401) { clearToken(); }
+    else if (res.ok) {
+      const user = await res.json();
+      if (version !== authVersion) return;
+      currentUser = user; currentFavourites = user.favourites || []; sessionRestoreNeedsRetry = false;
+    } else { sessionRestoreNeedsRetry = true; }
+  } catch (e) { if (version !== authVersion) return; sessionRestoreNeedsRetry = true; }
   updateAuthUI();
-  refreshNotifBadge();
+  if (!sessionRestoreNeedsRetry) refreshNotifBadge();
 }
 
 function updateAuthUI() {
@@ -1487,7 +1497,10 @@ document.getElementById('regSubmitBtn').addEventListener('click', async () => {
 });
 
 async function logout() {
-  try { await fetch('/api/auth/logout', { method: 'POST', headers: authHeaders() }); } catch (e) {}
+  try {
+    const res = await fetch('/api/auth/logout', { method: 'POST', headers: authHeaders() });
+    if (!res.ok) throw new Error('Logout failed.');
+  } catch (e) { alert('Could not log out. Please check your connection and try again.'); return; }
   clearToken();
   updateAuthUI();
 }
@@ -1745,5 +1758,4 @@ checkBtn.addEventListener('click', async () => {
 // Now that every element referenced by updateAuthUI()/loadTrackRecord() is
 // declared, resolve the current session and route to whatever the URL hash
 // says (both reference currentUser/authHeaders, which don't exist earlier).
-refreshMe();
-routeFromHash();
+refreshMe().then(routeFromHash);

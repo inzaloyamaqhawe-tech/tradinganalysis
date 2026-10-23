@@ -1,5 +1,13 @@
 # TradingAnalysis GPT Analysis
 
+## Login Sessions (2026-10-23)
+
+- Browser login uses an HttpOnly, SameSite=Lax cookie that expires seven hours after login. HTTPS/production cookies use Secure. Page refreshes and new tabs restore the same session without storing the token in localStorage.
+- MySQL and Postgres enforce the same seven-hour limit using the session's existing `created_at` timestamp. The expiry does not slide when the user makes requests. No new database column is needed.
+- Explicit logout revokes the session and removes its cookie. Temporary connection errors and 5xx responses keep the current login; session restoration retries on the existing notification cycle. A genuine 401 clears the expired login.
+- Demo storage persists timestamped sessions to its existing account data file. Legacy demo tokens without a creation timestamp are discarded. Production database sessions survive app restarts; demo files still need persistent disk across deployments.
+- After deploying this change, users should sign in once to receive the new cookie. Browser privacy settings that clear or block cookies can still remove the login before seven hours.
+
 ## Current Payment Workflow (2026-10-18)
 
 This section supersedes older payment proposals below.
